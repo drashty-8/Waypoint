@@ -6,5 +6,9 @@
       "Read(**/secrets/**)",
       "Bash(cat **/.env)"
     ]
+  },
+  "attribution": {
+    "commit": "",
+    "pr": ""
   }
 }
