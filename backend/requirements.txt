@@ -7,6 +7,7 @@ click==8.5.0
 cryptography==50.0.1
 deprecation==2.1.0
 fastapi==0.141.1
+filetype==1.2.0
 h11==0.16.0
 h2==4.4.1
 hpack==4.2.0
@@ -23,6 +24,7 @@ pydantic==2.13.5
 pydantic_core==2.46.5
 PyJWT==2.14.0
 python-dotenv==1.2.3
+python-multipart==0.0.32
 realtime==2.31.0
 starlette==1.6.0
 storage3==2.31.0
