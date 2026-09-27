@@ -56,6 +56,9 @@ See docs/decisions.md for the reasoning behind these and other calls.
   (e.g. routers/photos.py, routers/query.py), registered in main.py
   with app.include_router(...). Import the shared Supabase client from
   database.py, never from main.py (that creates a circular import).
+- Tests: run pytest from backend/ before considering any endpoint
+  change complete. Tests live in backend/tests/ and use the
+  fake_supabase fixture from conftest.py, never a real Supabase project.
 
 ## Code style
 - Prefer readable, explainable code over clever one-liners — e.g.
