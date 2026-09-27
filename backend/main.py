@@ -1,15 +1,16 @@
-import os
+import logging
 
-from dotenv import load_dotenv
 from fastapi import FastAPI
 
+from routers import photos
 
-load_dotenv()
 
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_SECRET_KEY = os.environ["SUPABASE_SECRET_KEY"]
+logging.basicConfig(level=logging.INFO)
 
 app = FastAPI()
+
+# Each group of endpoints lives in its own file under routers/.
+app.include_router(photos.router)
 
 @app.get("/")
 def root():

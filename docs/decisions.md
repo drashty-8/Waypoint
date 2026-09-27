@@ -51,3 +51,44 @@ tags is a short list of discrete object names from the same Claude
 call, enabling cheaper filtering/matching later and unblocking
 SCRUM-48 (advanced filter/sort), whether or not that story ships
 this semester.
+
+**POST /photos detects the image type from the file's bytes, not the
+client's Content-Type header.** The header is client-controlled, so an
+.exe labelled image/jpeg would pass a header check. The bucket's own
+MIME allowlist doesn't catch it either, since it trusts the
+Content-Type we send on upload. The detected type now drives the
+allowlist check, the Storage file extension and the Content-Type sent
+to Storage. Uses the pure-Python filetype package rather than
+python-magic, so there's no system libmagic install for teammates or
+servers. filetype only recognizes HEIC files branded "heic", so a
+small brand check covers plain HEIF ("mif1", "msf1") and HEIC variants
+like "heix"; these are stored as image/heif. Only the file header is
+checked, not that the whole file decodes: enough to stop a renamed
+executable or script, not a deliberately crafted file with a valid
+image header.
+
+**HEIC variants caught by the brand check are labelled image/heif.**
+heix, heim, heis, hevc and hevx are really HEIC variants, but they get
+stored as .heif with Content-Type image/heif. Known and left as-is:
+HEIC is a subset of HEIF, so the label is still accurate at the
+container level, and nothing downstream depends on the distinction.
+
+**POST /photos returns 400, not FastAPI's default 422, for missing
+fields.** FastAPI rejects a missing required field with 422 before the
+endpoint runs. The spec calls for 400 on every Phase 1 failure, so the
+fields are Optional in the signature and the endpoint's own checks
+raise the 400.
+
+**A blank beacon_uuid is treated as "not sent", not as an invalid
+UUID.** Form clients can send an empty field instead of omitting it.
+An empty value carries no beacon, so it's handled the same as a
+missing one (null beacon, "Location unknown") rather than rejected.
+
+**A failed beacon lookup in Phase 2 returns 500.** The spec only
+covers the not-found case (404). A database error during the lookup is
+a server-side failure, not a problem with the request, so it returns
+500 and logs the error.
+
+**The 10MB image limit is 10 * 1024 * 1024 bytes.** Checked against
+how Supabase interprets the bucket's 10MB file limit (1024-based) and
+it matches, so the Phase 1 check and the bucket reject at the same size.
