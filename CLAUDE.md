@@ -52,6 +52,10 @@ See docs/decisions.md for the reasoning behind these and other calls.
 ## Conventions
 - Branch prefixes: feature/, fix/, docs/, chore/
 - After merging: git checkout main && git pull && git branch -d <branch>
+- Endpoints: one APIRouter per resource in backend/routers/<name>.py
+  (e.g. routers/photos.py, routers/query.py), registered in main.py
+  with app.include_router(...). Import the shared Supabase client from
+  database.py, never from main.py (that creates a circular import).
 
 ## Code style
 - Prefer readable, explainable code over clever one-liners — e.g.
