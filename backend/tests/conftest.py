@@ -44,17 +44,20 @@ class FakeSupabase:
 
 @pytest.fixture
 def fake_supabase(monkeypatch):
-    """Swap the real Supabase client for a FakeSupabase in every router.
+    """Swap the real Supabase client for a FakeSupabase in tagging.py and every router.
 
-    Each router does `from database import supabase`, which gives it its
-    own reference to the client, so each router module has to be patched
+    Each of those modules does `from database import supabase`, which gives
+    it its own reference to the client, so each one has to be patched
     separately. This finds every module in routers/ automatically, so new
     routers (e.g. routers/query.py) are covered without changing this.
     """
     fake = FakeSupabase()
 
+    modules = [tagging]
     for module_info in pkgutil.iter_modules(routers.__path__):
-        module = importlib.import_module(f"routers.{module_info.name}")
+        modules.append(importlib.import_module(f"routers.{module_info.name}"))
+
+    for module in modules:
         if hasattr(module, "supabase"):
             monkeypatch.setattr(module, "supabase", fake.client)
 
