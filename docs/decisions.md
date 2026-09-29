@@ -92,3 +92,55 @@ a server-side failure, not a problem with the request, so it returns
 **The 10MB image limit is 10 * 1024 * 1024 bytes.** Checked against
 how Supabase interprets the bucket's 10MB file limit (1024-based) and
 it matches, so the Phase 1 check and the bucket reject at the same size.
+
+**Tagging accuracy, as of SCRUM-34:** small/portable objects (a lip
+balm, an object on a mousepad) were missed even with no prompt
+constraints at all — pointing to Claude's internal image resize (~1.15
+megapixels) as a likely cause, not prompt wording. A tighter crop of
+just the relevant area partially confirmed this. Separately, confident
+mislabeling persists despite explicit hedging instructions: a
+humidifier was called an "air purifier," a router a "Google Home
+speaker," a stack of books guessed as "programming or technical
+manuals." Both issues are known, unresolved, and out of scope for
+COMP490's three example queries (charger, whiteboard, room) — revisit
+only if a real query fails because of either.
+
+**Claude's image size limit is 10MB, measured on the base64 data, not
+5MB.** The direct Claude API allows 10MB per image after base64
+encoding (about a third bigger than the file); the often-quoted 5MB is
+the Bedrock/Vertex limit. tagging.py checks the base64 length after any
+HEIC conversion and fails with a specific log reason instead of sending
+the image and getting a generic API rejection. Consequence: files of
+roughly 7.5–10MB pass the bucket's 10MB upload limit but are marked
+failed at tagging. Not resized — revisit if real uploads hit it. The
+docs just say "10MB"; treated as 1024-based, like the bucket limit.
+
+**Tagging forces a tool call instead of accepting free text.**
+tool_choice requires record_photo_tags, with a strict schema
+(description string, tags array), so every successful response has the
+same shape and saving it means reading two fields, with no free-text
+parsing. A response without that tool call (refusal, cut off at
+max_tokens, plain text) counts as a failure. Works on Haiku 4.5, but
+newer models (Opus 5.5, Fable 5.1) reject a forced tool_choice, so a
+future model switch means tool_choice "auto" plus the strict tool, or
+structured outputs.
+
+**HEIC/HEIF is converted to JPEG before sending to Claude; Storage
+keeps the original.** Claude only accepts JPEG, PNG, GIF and WebP. The
+conversion happens in memory at tagging time (pillow-heif, same pixel
+dimensions, JPEG quality 90); the stored file and image_url stay the
+untouched HEIC, so nothing is lost and the conversion can change later
+without re-uploading. Cost: the conversion reruns on every tagging
+attempt, including SCRUM-29 retries — small next to the Claude call.
+
+**Every trigger_tagging failure sets tagging_status = 'failed'; retry
+logic is SCRUM-29.** Missing or deleted row, lookup error, download
+error, unrecognized type, failed HEIC conversion, oversized image,
+Claude error or no tool call, and failed save all take the same path,
+so a broken photo is distinguishable from one still pending. For a
+deleted row the update matches nothing — a harmless no-op. If the
+database itself is down, marking failed likely fails too and the photo
+stays pending, so SCRUM-29 should treat a long-stale 'pending' as
+possibly failed. Telling retryable failures (rate limit, 5xx, network)
+from permanent ones is left to SCRUM-29; the logged exception type is
+enough to do it.
