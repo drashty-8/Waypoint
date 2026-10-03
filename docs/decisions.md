@@ -170,3 +170,17 @@ mislabeling gap (see the SCRUM-34 tagging accuracy entry above) stopped
 mattering. A harder question, or a less semantically close mislabel,
 would likely still surface as a missed match. Revisit together with
 tagging accuracy; not resolved by this result.
+
+**Backend hosting: Fly.io, app waypoint-backend, region lax,
+shared-cpu-1x / 512MB, scale-to-zero.** min_machines_running = 0
+(~1.5s cold start) rather than always-on — near-zero cost for current
+usage; switch to always-on, or manually ping the server, before a live
+demo to remove the cold start when it matters. Chosen over Render
+(free, but ~60s cold start on the free tier) and Railway (no longer has
+a true free tier). Fly's GitHub-generated Dockerfile ran the fastapi CLI
+(fastapi run), which needs the fastapi[standard] extras; this project
+installs plain fastapi + uvicorn, so CMD calls uvicorn directly,
+matching local development. .dockerignore lists .env and venv/ —
+Docker doesn't read .gitignore, so without them secrets would be baked
+into the image. Secrets are set with fly secrets set; .env never ships
+in the image.
