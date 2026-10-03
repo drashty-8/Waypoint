@@ -144,3 +144,29 @@ stays pending, so SCRUM-29 should treat a long-stale 'pending' as
 possibly failed. Telling retryable failures (rate limit, 5xx, network)
 from permanent ones is left to SCRUM-29; the logged exception type is
 enough to do it.
+
+**POST /query forces a tool call on claude-haiku-4-5-20251001, the
+same model as tagging.** Newer models (Opus 5.5, Sonnet 5.5) reject a
+forced tool_choice with a 400. Switching to one later means
+tool_choice "auto" plus a prompt instruction, with a missing tool call
+treated as 502 — the code already handles that case. Check whether a
+future Haiku version has the same restriction before upgrading
+casually.
+
+**Schema-valid but semantically wrong match responses return 502, not
+the broken result.** The strict schema guarantees shape (integer or
+null, string or null), not correctness: Claude could still name a
+photo id that isn't in the candidate list, or pick a photo with a null
+answer. Both are treated as a failed call rather than surfaced to the
+client — the same hedge-over-guess principle as the rest of the
+project.
+
+**Live-tested: semantic matching can compensate for a wrong tagging
+label, but isn't reliable for it.** "Where is my humidifier" matched
+a photo whose description says "air purifier" — Claude bridged the
+synonym at query time. Real evidence for free-text matching over
+literal keyword/tag search, but one favorable case, not proof the
+mislabeling gap (see the SCRUM-34 tagging accuracy entry above) stopped
+mattering. A harder question, or a less semantically close mislabel,
+would likely still surface as a missed match. Revisit together with
+tagging accuracy; not resolved by this result.
