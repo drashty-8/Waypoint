@@ -1,4 +1,5 @@
 import logging
+import re
 import uuid
 from datetime import datetime
 
@@ -37,6 +38,9 @@ ALLOWED_IMAGE_TYPES = {
 # HEIC variants like "heix" (10-bit, used by some Android phones) are
 # checked here instead.
 EXTRA_HEIF_BRANDS = {b"mif1", b"msf1", b"heix", b"heim", b"heis", b"hevc", b"hevx"}
+
+# A beacon's major and minor are each 16-bit numbers, so 0 to 65535.
+MAX_BEACON_NUMBER = 65535
 
 
 def detect_image_type(image_bytes: bytes) -> str | None:
@@ -78,15 +82,91 @@ def parse_captured_at(value: str | None) -> datetime:
     return captured_at
 
 
-def parse_beacon_uuid(value: str | None) -> str | None:
-    """Return beacon_uuid in standard form, None if it wasn't sent, or raise a 400 if it's invalid."""
-    if value is None or value.strip() == "":
-        return None
+def is_blank(value: str | None) -> bool:
+    """True if a form field wasn't sent or was sent empty, which count the same."""
+    return value is None or value.strip() == ""
 
+
+def parse_beacon_uuid(value: str) -> str:
+    """Return beacon_uuid in standard form, or raise a 400 if it's invalid."""
     try:
         return str(uuid.UUID(value.strip()))
     except ValueError:
         raise HTTPException(status_code=400, detail="beacon_uuid must be a valid UUID")
+
+
+def parse_beacon_number(field_name: str, value: str) -> int:
+    """Return a beacon major or minor as an int, or raise a 400 unless it's a whole number from 0 to 65535."""
+    text = value.strip()
+
+    # Only plain ASCII digits are allowed. int() on its own would also
+    # accept things like "+5", "1_000" or non-ASCII digits like "٣".
+    # ([0-9] is used rather than \d, which matches non-ASCII digits too.)
+    if not re.fullmatch(r"[0-9]+", text):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} must be an integer from 0 to {MAX_BEACON_NUMBER}",
+        )
+
+    # Leading zeros don't change the value, so drop them ("0005" is 5).
+    # If nothing is left, the value was all zeros, i.e. 0.
+    digits = text.lstrip("0")
+    if digits == "":
+        digits = "0"
+
+    # Anything longer than 5 digits is out of range. Checking the length
+    # before int() also means int() never sees a very long string: Python
+    # refuses to convert more than 4300 digits and raises instead.
+    if len(digits) > len(str(MAX_BEACON_NUMBER)):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} must be an integer from 0 to {MAX_BEACON_NUMBER}",
+        )
+
+    number = int(digits)
+    if number > MAX_BEACON_NUMBER:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field_name} must be an integer from 0 to {MAX_BEACON_NUMBER}",
+        )
+
+    return number
+
+
+def parse_beacon(beacon_uuid: str | None, beacon_major: str | None, beacon_minor: str | None) -> dict | None:
+    """Validate the beacon triple (uuid, major, minor).
+
+    Returns {"uuid", "major", "minor"}, or None if none of the three was
+    sent. Raises a 400 if only some of them were sent or any is invalid.
+    """
+    fields = {
+        "beacon_uuid": beacon_uuid,
+        "beacon_major": beacon_major,
+        "beacon_minor": beacon_minor,
+    }
+
+    missing = []
+    for name, value in fields.items():
+        if is_blank(value):
+            missing.append(name)
+
+    if len(missing) == len(fields):
+        return None
+
+    if len(missing) > 0:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "beacon_uuid, beacon_major and beacon_minor must be sent together; "
+                f"missing: {', '.join(missing)}"
+            ),
+        )
+
+    return {
+        "uuid": parse_beacon_uuid(beacon_uuid),
+        "major": parse_beacon_number("beacon_major", beacon_major),
+        "minor": parse_beacon_number("beacon_minor", beacon_minor),
+    }
 
 
 def insert_photo_row(row: dict) -> dict:
@@ -105,6 +185,8 @@ def create_photo(
     image: UploadFile | None = File(None),
     captured_at: str | None = Form(None),
     beacon_uuid: str | None = Form(None),
+    beacon_major: str | None = Form(None),
+    beacon_minor: str | None = Form(None),
 ):
     # Phase 1: validate the request. Nothing has been written yet, so any
     # failure here is a plain 400. Fields are optional in the signature so a
@@ -126,26 +208,32 @@ def create_photo(
         raise HTTPException(status_code=400, detail=f"image must be one of: {allowed}")
 
     parsed_captured_at = parse_captured_at(captured_at)
-    parsed_beacon_uuid = parse_beacon_uuid(beacon_uuid)
+    beacon = parse_beacon(beacon_uuid, beacon_major, beacon_minor)
 
-    # Phase 2: if a beacon was sent, make sure it exists before uploading
-    # anything. Otherwise the foreign key would only fail at insert time,
-    # after the file was already in Storage.
-    if parsed_beacon_uuid is not None:
+    # Phase 2: if a beacon was sent, find its id before uploading anything.
+    # A beacon is identified by its uuid, major and minor together (several
+    # beacons can share a uuid), so all three are matched.
+    beacon_id = None
+    if beacon is not None:
         try:
             beacon_result = (
                 supabase.table("beacons")
                 .select("id")
-                .eq("beacon_uuid", parsed_beacon_uuid)
+                .eq("user_id", PLACEHOLDER_USER_ID)
+                .eq("beacon_uuid", beacon["uuid"])
+                .eq("major", beacon["major"])
+                .eq("minor", beacon["minor"])
                 .limit(1)
                 .execute()
             )
         except Exception:
             logger.exception("Beacon lookup failed")
-            raise HTTPException(status_code=500, detail="Could not check beacon_uuid")
+            raise HTTPException(status_code=500, detail="Could not check beacon")
 
         if len(beacon_result.data) == 0:
-            raise HTTPException(status_code=404, detail="beacon_uuid not found")
+            raise HTTPException(status_code=404, detail="beacon not found")
+
+        beacon_id = beacon_result.data[0]["id"]
 
     # Phase 3: upload the image to Storage. If this fails, nothing else has
     # been written, so there is nothing to clean up.
@@ -167,7 +255,7 @@ def create_photo(
         "user_id": PLACEHOLDER_USER_ID,
         "captured_at": parsed_captured_at.isoformat(),
         "image_url": image_url,
-        "beacon_uuid": parsed_beacon_uuid,
+        "beacon_id": beacon_id,
     }
 
     try:
