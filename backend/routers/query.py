@@ -92,7 +92,7 @@ def get_candidate_photos() -> list[dict]:
     """Return every fully tagged photo with its room name, most recent first.
 
     "beacons(room_name)" in the select asks Supabase to follow the
-    photos.beacon_uuid foreign key and include the matching beacon's
+    photos.beacon_id foreign key and include the matching beacon's
     room_name, so no second query is needed. For a photo with no beacon,
     "beacons" comes back as None.
     """

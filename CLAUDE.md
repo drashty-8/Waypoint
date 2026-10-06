@@ -22,17 +22,21 @@ leave my charger?").
 - description text, nullable — filled by tagging
 - tags text[], nullable — filled by tagging
 - image_url text, NOT NULL
-- beacon_uuid uuid, nullable, FK -> beacons.beacon_uuid,
+- beacon_id bigint, nullable, FK -> beacons.id,
   ON UPDATE CASCADE / ON DELETE RESTRICT
 - tagging_status text, NOT NULL, default 'pending',
   CHECK IN ('pending', 'complete', 'failed')
 
 ### beacons
 - id int8, PK
-- beacon_uuid uuid, UNIQUE, NOT NULL
+- beacon_uuid uuid, NOT NULL
+- major integer, NOT NULL, CHECK between 0 and 65535
+- minor integer, NOT NULL, CHECK between 0 and 65535
 - room_name text, NOT NULL
 - user_id uuid, NOT NULL, shared placeholder value
 - created_at timestamptz, default now()
+- UNIQUE (user_id, beacon_uuid, major, minor) — a beacon is identified
+  by the full triple, so several beacons can share a uuid
 
 ### Storage bucket "photos"
 Public, 10MB file limit, MIME types: jpeg, png, webp, heic, heif.

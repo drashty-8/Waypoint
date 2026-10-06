@@ -7,6 +7,9 @@ from routers import photos
 
 CAPTURED_AT = "2026-09-26T14:00:00Z"
 BEACON_UUID = "11111111-2222-3333-4444-555555555555"
+BEACON_MAJOR = "1"
+BEACON_MINOR = "2"
+BEACON_ID = 17
 IMAGE_URL = "https://example.supabase.co/storage/v1/object/public/photos/test.jpg"
 NEW_PHOTO_ID = 42
 
@@ -26,6 +29,31 @@ def heif_family_bytes(major_brand: bytes, compatible_brands: bytes) -> bytes:
     return box_size + box_body + b"\x00" * 60
 
 
+def beacon_lookup(fake_supabase):
+    """Return the fake for the beacon lookup's .limit(1), whose .execute() a test can set up.
+
+    The lookup is select("id") followed by four .eq() filters, then .limit(1).
+    """
+    filtered = fake_supabase.tables["beacons"].select.return_value
+    for _ in range(4):
+        filtered = filtered.eq.return_value
+    return filtered.limit.return_value
+
+
+def beacon_lookup_filters(fake_supabase):
+    """Return the beacon lookup's .eq() filters as {column: value}.
+
+    The fake Supabase doesn't filter rows itself, so tests check that the
+    right filters were asked for instead.
+    """
+    filters = {}
+    for name, args, kwargs in fake_supabase.tables["beacons"].mock_calls:
+        if name.split(".")[-1] == "eq":
+            column, value = args
+            filters[column] = value
+    return filters
+
+
 @pytest.fixture
 def photos_supabase(fake_supabase):
     """A fake Supabase where every step of POST /photos succeeds.
@@ -33,8 +61,7 @@ def photos_supabase(fake_supabase):
     Every test in this file needs it. Tests that need a step to fail
     override just that part.
     """
-    beacon_lookup = fake_supabase.tables["beacons"].select.return_value.eq.return_value.limit.return_value
-    beacon_lookup.execute.return_value.data = [{"id": 1}]
+    beacon_lookup(fake_supabase).execute.return_value.data = [{"id": BEACON_ID}]
 
     photo_insert = fake_supabase.tables["photos"].insert.return_value
     photo_insert.execute.return_value.data = [{"id": NEW_PHOTO_ID, "tagging_status": "pending"}]
@@ -55,7 +82,14 @@ def tagging_calls(monkeypatch):
     return calls
 
 
-def post_photo(client, image=("photo.jpg", JPEG_BYTES, "image/jpeg"), captured_at=CAPTURED_AT, beacon_uuid=None):
+def post_photo(
+    client,
+    image=("photo.jpg", JPEG_BYTES, "image/jpeg"),
+    captured_at=CAPTURED_AT,
+    beacon_uuid=None,
+    beacon_major=None,
+    beacon_minor=None,
+):
     """Send POST /photos, leaving out any field passed as None."""
     files = {}
     if image is not None:
@@ -66,8 +100,17 @@ def post_photo(client, image=("photo.jpg", JPEG_BYTES, "image/jpeg"), captured_a
         data["captured_at"] = captured_at
     if beacon_uuid is not None:
         data["beacon_uuid"] = beacon_uuid
+    if beacon_major is not None:
+        data["beacon_major"] = beacon_major
+    if beacon_minor is not None:
+        data["beacon_minor"] = beacon_minor
 
     return client.post("/photos", files=files, data=data)
+
+
+def post_photo_with_beacon(client, beacon_uuid=BEACON_UUID, beacon_major=BEACON_MAJOR, beacon_minor=BEACON_MINOR):
+    """Send POST /photos with a full beacon triple, overriding any one part as needed."""
+    return post_photo(client, beacon_uuid=beacon_uuid, beacon_major=beacon_major, beacon_minor=beacon_minor)
 
 
 def uploaded_content_type_and_path(fake_supabase):
@@ -81,7 +124,7 @@ def uploaded_content_type_and_path(fake_supabase):
 # --- Successful uploads ---
 
 def test_upload_with_beacon_returns_201_inserts_row_and_starts_tagging(client, photos_supabase, tagging_calls):
-    response = post_photo(client, beacon_uuid=BEACON_UUID)
+    response = post_photo_with_beacon(client)
 
     assert response.status_code == 201
     assert response.json() == {"id": NEW_PHOTO_ID, "tagging_status": "pending"}
@@ -91,9 +134,51 @@ def test_upload_with_beacon_returns_201_inserts_row_and_starts_tagging(client, p
         "user_id": photos.PLACEHOLDER_USER_ID,
         "captured_at": "2026-09-26T14:00:00+00:00",
         "image_url": IMAGE_URL,
-        "beacon_uuid": BEACON_UUID,
+        "beacon_id": BEACON_ID,
     }
     assert tagging_calls == [NEW_PHOTO_ID]
+
+
+@pytest.mark.usefixtures("tagging_calls")
+def test_beacon_lookup_filters_on_user_uuid_major_and_minor(client, photos_supabase):
+    response = post_photo_with_beacon(client, beacon_major="300", beacon_minor="4000")
+
+    assert response.status_code == 201
+    assert beacon_lookup_filters(photos_supabase) == {
+        "user_id": photos.PLACEHOLDER_USER_ID,
+        "beacon_uuid": BEACON_UUID,
+        "major": 300,
+        "minor": 4000,
+    }
+    inserted_row = photos_supabase.tables["photos"].insert.call_args.args[0]
+    assert inserted_row["beacon_id"] == BEACON_ID
+
+
+@pytest.mark.usefixtures("tagging_calls")
+@pytest.mark.parametrize("value", ["0", "65535"])
+def test_major_and_minor_at_range_limits_are_accepted(client, photos_supabase, value):
+    response = post_photo_with_beacon(client, beacon_major=value, beacon_minor=value)
+
+    assert response.status_code == 201
+    filters = beacon_lookup_filters(photos_supabase)
+    assert filters["major"] == int(value)
+    assert filters["minor"] == int(value)
+
+
+@pytest.mark.usefixtures("tagging_calls")
+@pytest.mark.parametrize("field, column", [("beacon_major", "major"), ("beacon_minor", "minor")])
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        pytest.param("0" * 5000, 0, id="5000-zeros"),
+        pytest.param("0" * 4301 + "5", 5, id="4301-zeros-then-5"),
+    ],
+)
+def test_long_run_of_leading_zeros_is_accepted(client, photos_supabase, field, column, value, expected):
+    response = post_photo_with_beacon(client, **{field: value})
+
+    assert response.status_code == 201
+    assert beacon_lookup_filters(photos_supabase)[column] == expected
 
 
 @pytest.mark.usefixtures("tagging_calls")
@@ -104,18 +189,18 @@ def test_upload_without_beacon_returns_201_and_skips_beacon_lookup(client, photo
     tables_used = [call.args[0] for call in photos_supabase.client.table.call_args_list]
     assert "beacons" not in tables_used
     inserted_row = photos_supabase.tables["photos"].insert.call_args.args[0]
-    assert inserted_row["beacon_uuid"] is None
+    assert inserted_row["beacon_id"] is None
 
 
 @pytest.mark.usefixtures("tagging_calls")
-def test_blank_beacon_uuid_is_treated_as_not_sent(client, photos_supabase):
-    response = post_photo(client, beacon_uuid="")
+def test_blank_beacon_triple_is_treated_as_not_sent(client, photos_supabase):
+    response = post_photo_with_beacon(client, beacon_uuid="", beacon_major="", beacon_minor="  ")
 
     assert response.status_code == 201
     tables_used = [call.args[0] for call in photos_supabase.client.table.call_args_list]
     assert "beacons" not in tables_used
     inserted_row = photos_supabase.tables["photos"].insert.call_args.args[0]
-    assert inserted_row["beacon_uuid"] is None
+    assert inserted_row["beacon_id"] is None
 
 
 # --- Phase 1: request validation (400) ---
@@ -180,10 +265,45 @@ def test_captured_at_without_timezone_returns_400(client):
 
 @pytest.mark.usefixtures("photos_supabase", "tagging_calls")
 def test_invalid_beacon_uuid_returns_400(client):
-    response = post_photo(client, beacon_uuid="not-a-uuid")
+    response = post_photo_with_beacon(client, beacon_uuid="not-a-uuid")
 
     assert response.status_code == 400
     assert response.json()["detail"] == "beacon_uuid must be a valid UUID"
+
+
+# Every way of sending one or two of the three beacon fields, as
+# (fields sent, fields reported missing).
+PARTIAL_BEACON_TRIPLES = [
+    ({"beacon_uuid": BEACON_UUID}, "beacon_major, beacon_minor"),
+    ({"beacon_major": BEACON_MAJOR}, "beacon_uuid, beacon_minor"),
+    ({"beacon_minor": BEACON_MINOR}, "beacon_uuid, beacon_major"),
+    ({"beacon_uuid": BEACON_UUID, "beacon_major": BEACON_MAJOR}, "beacon_minor"),
+    ({"beacon_uuid": BEACON_UUID, "beacon_minor": BEACON_MINOR}, "beacon_major"),
+    ({"beacon_major": BEACON_MAJOR, "beacon_minor": BEACON_MINOR}, "beacon_uuid"),
+]
+
+
+@pytest.mark.parametrize("beacon_fields, missing", PARTIAL_BEACON_TRIPLES)
+@pytest.mark.usefixtures("tagging_calls")
+def test_partial_beacon_triple_returns_400_without_uploading(client, photos_supabase, beacon_fields, missing):
+    response = post_photo(client, **beacon_fields)
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == (
+        f"beacon_uuid, beacon_major and beacon_minor must be sent together; missing: {missing}"
+    )
+    photos_supabase.buckets["photos"].upload.assert_not_called()
+
+
+@pytest.mark.parametrize("field", ["beacon_major", "beacon_minor"])
+@pytest.mark.parametrize("value", ["abc", "1.5", "+5", "1_000", "-1", "65536", "²", pytest.param("9" * 5000, id="5000-digits")])
+@pytest.mark.usefixtures("tagging_calls")
+def test_non_integer_or_out_of_range_major_or_minor_returns_400(client, photos_supabase, field, value):
+    response = post_photo_with_beacon(client, **{field: value})
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == f"{field} must be an integer from 0 to 65535"
+    photos_supabase.buckets["photos"].upload.assert_not_called()
 
 
 # --- Phase 1: file type detection from the file's own bytes ---
@@ -295,25 +415,24 @@ def test_jpeg_labelled_as_png_is_stored_as_jpeg(client, photos_supabase):
 
 @pytest.mark.usefixtures("tagging_calls")
 def test_unknown_beacon_returns_404_without_uploading(client, photos_supabase):
-    beacon_lookup = photos_supabase.tables["beacons"].select.return_value.eq.return_value.limit.return_value
-    beacon_lookup.execute.return_value.data = []
+    beacon_lookup(photos_supabase).execute.return_value.data = []
 
-    response = post_photo(client, beacon_uuid=BEACON_UUID)
+    response = post_photo_with_beacon(client)
 
     assert response.status_code == 404
-    assert response.json()["detail"] == "beacon_uuid not found"
+    assert response.json()["detail"] == "beacon not found"
     photos_supabase.buckets["photos"].upload.assert_not_called()
+    photos_supabase.tables["photos"].insert.assert_not_called()
 
 
 @pytest.mark.usefixtures("tagging_calls")
 def test_beacon_lookup_failure_returns_500_without_uploading(client, photos_supabase):
-    beacon_lookup = photos_supabase.tables["beacons"].select.return_value.eq.return_value.limit.return_value
-    beacon_lookup.execute.side_effect = Exception("database is down")
+    beacon_lookup(photos_supabase).execute.side_effect = Exception("database is down")
 
-    response = post_photo(client, beacon_uuid=BEACON_UUID)
+    response = post_photo_with_beacon(client)
 
     assert response.status_code == 500
-    assert response.json()["detail"] == "Could not check beacon_uuid"
+    assert response.json()["detail"] == "Could not check beacon"
     photos_supabase.buckets["photos"].upload.assert_not_called()
 
 

@@ -15,13 +15,32 @@ the backend then needs a webhook, a Realtime subscription, or polling
 one endpoint means the same code that inserts the row calls tagging
 on its next line, no detection step needed.
 
-**beacon_uuid is nullable, uuid type, FK to beacons with ON UPDATE
-CASCADE / ON DELETE RESTRICT.** Nullable because a photo can save with
-no beacon match ("Location unknown" — layered fallback: auto-detect,
-then manual pick from registered rooms, then skip to null). Type
-matches iBeacon UUIDs, already UUID-formatted. Cascade on update so a
-corrected beacon UUID propagates; restrict on delete so a beacon can't
-be removed while photos still reference it.
+**photos.beacon_id is a nullable bigint FK to beacons.id with ON
+UPDATE CASCADE / ON DELETE RESTRICT.** Replaced photos.beacon_uuid once
+a beacon became identified by its full UUID + Major + Minor triple (see
+below): a UUID alone no longer names one beacon, so photos point at the
+beacons row's id instead. Nullable because a photo can save with no
+beacon match ("Location unknown" — layered fallback: auto-detect, then
+manual pick from registered rooms, then skip to null). Restrict on
+delete so a beacon can't be removed while photos still reference it.
+
+**Beacons are identified by iBeacon UUID + Major + Minor, with user_id
+in the unique key.** The unique key is (user_id, beacon_uuid, major,
+minor). Users set up their own beacons, so they can share one UUID
+across rooms and vary Minor, or use different UUIDs with the same
+Major/Minor — the full triple is what tells beacons apart. user_id is
+in the key so different users can reuse the same triple without
+colliding. Major and Minor are integers with a CHECK of 0 to 65535,
+matching iBeacon's 16-bit fields. POST /photos requires all three
+together and looks up the beacon on user_id plus the triple.
+
+**iBeacon was chosen over Eddystone-UID.** Google's Nearby Messages
+API, Google's main Android-side support for Eddystone, is deprecated.
+Eddystone packets can still be scanned directly with standard BLE APIs.
+The beacons already broadcast iBeacon, iBeacon is assumed to be the
+most likely default on beacons users configure themselves (not
+verified), and Core
+Location supports it natively on iOS.
 
 **captured_at is separate from created_at.** captured_at is when the
 photo was taken (client-supplied); created_at is when the row was
@@ -79,10 +98,12 @@ endpoint runs. The spec calls for 400 on every Phase 1 failure, so the
 fields are Optional in the signature and the endpoint's own checks
 raise the 400.
 
-**A blank beacon_uuid is treated as "not sent", not as an invalid
-UUID.** Form clients can send an empty field instead of omitting it.
-An empty value carries no beacon, so it's handled the same as a
-missing one (null beacon, "Location unknown") rather than rejected.
+**A blank beacon_uuid, beacon_major or beacon_minor is treated as "not
+sent", not as an invalid value.** Form clients can send an empty field
+instead of omitting it. An empty value carries no beacon information,
+so it's handled the same as a missing one. If all three are blank or
+missing, the photo saves with a null beacon_id ("Location unknown");
+if only some are, that's a partial triple and returns 400.
 
 **A failed beacon lookup in Phase 2 returns 500.** The spec only
 covers the not-found case (404). A database error during the lookup is
