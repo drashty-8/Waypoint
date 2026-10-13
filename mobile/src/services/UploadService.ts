@@ -1,40 +1,41 @@
-// Handles sending a captured photo to the backend's ingest endpoint.
-// Photos that fail to upload (weak network, backend down) stay queued
-// locally and retry automatically — this maps to the "reliable capture
-// under weak network" user story.
-
 import type { CapturedPhoto } from '../types';
 
-// TODO: point this at the real backend once the ingest endpoint exists.
-// Use your machine's local network IP (not localhost) when testing from
-// a physical phone against a backend running on your laptop.
-const INGEST_URL = 'http://REPLACE_WITH_BACKEND_IP:8000/ingest';
+const BACKEND_URL = 'https://waypoint-backend.fly.dev';
 
 /**
- * Attempts to upload one photo. Returns true on success, false on failure
- * (caller should leave the photo's status as 'pending' and retry later).
+ * Uploads one photo to the backend's POST /photos endpoint.
+ * Returns true on success, false on failure (the caller retries later).
  */
 export async function uploadPhoto(photo: CapturedPhoto): Promise<boolean> {
   try {
     const formData = new FormData();
-    formData.append('photo', {
+    formData.append('image', {
       uri: photo.localUri,
       name: `${photo.id}.jpg`,
       type: 'image/jpeg',
     } as any);
-    formData.append('timestamp', photo.timestamp);
-    if (photo.beacon) {
-      formData.append('beaconId', photo.beacon.beaconId);
-      formData.append('rssi', String(photo.beacon.rssi));
+    formData.append('captured_at', photo.timestamp);
+
+    // The backend wants all three beacon fields together, or none of them.
+    const beacon = photo.beacon;
+    if (beacon && beacon.uuid && beacon.major != null && beacon.minor != null) {
+      formData.append('beacon_uuid', beacon.uuid);
+      formData.append('beacon_major', String(beacon.major));
+      formData.append('beacon_minor', String(beacon.minor));
     }
 
-    const response = await fetch(INGEST_URL, {
+    const response = await fetch(`${BACKEND_URL}/photos`, {
       method: 'POST',
       body: formData,
-      headers: { 'Content-Type': 'multipart/form-data' },
     });
 
-    return response.ok;
+    if (!response.ok) {
+      console.warn('Upload rejected:', response.status, await response.text());
+      return false;
+    }
+
+    console.log('Uploaded:', await response.json());
+    return true;
   } catch (err) {
     console.warn('Upload failed, will retry later:', err);
     return false;
@@ -42,10 +43,7 @@ export async function uploadPhoto(photo: CapturedPhoto): Promise<boolean> {
 }
 
 /**
- * Walks a list of photos and attempts to upload any still marked 'pending'
- * or 'failed'. Call this on app foreground and periodically (e.g. every
- * 30s) while there's a pending queue — wire it up wherever you're keeping
- * photo state (Context, Redux, Zustand, etc.).
+ * Tries to upload any photos still marked 'pending' or 'failed'.
  */
 export async function retryPendingUploads(
   photos: CapturedPhoto[],
