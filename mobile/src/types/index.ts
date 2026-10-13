@@ -5,6 +5,9 @@
 export interface BeaconReading {
   beaconId: string;
   rssi: number;
+  uuid?: string;
+  major?: number;
+  minor?: number;
 }
 
 export interface CapturedPhoto {
