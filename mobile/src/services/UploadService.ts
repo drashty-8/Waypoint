@@ -8,7 +8,7 @@ import type { CapturedPhoto } from '../types';
 // TODO: point this at the real backend once the ingest endpoint exists.
 // Use your machine's local network IP (not localhost) when testing from
 // a physical phone against a backend running on your laptop.
-const INGEST_URL = 'http://REPLACE_WITH_BACKEND_IP:8000/ingest';
+const INGEST_URL = 'https://waypoint-backend.fly.dev/photos';
 
 /**
  * Attempts to upload one photo. Returns true on success, false on failure
