@@ -203,8 +203,11 @@ async def trigger_tagging(photo_id: int) -> None:
     It runs as a background task after POST /photos has already
     responded, so failures are logged rather than raised. Every failure
     path tries to set tagging_status to 'failed'; if the row no longer
-    exists, that update matches nothing and does nothing. There's no
-    retrying here; that's SCRUM-29.
+    exists, that update matches nothing and does nothing.
+
+    The Claude call itself is retried twice by the Anthropic SDK (see
+    claude_client.py) before it counts as a failure here. Nothing in this
+    function retries; re-tagging photos already marked 'failed' is SCRUM-29.
     """
     # Imported here rather than at the top of the file because
     # routers/photos.py imports this module. Importing routers.photos
