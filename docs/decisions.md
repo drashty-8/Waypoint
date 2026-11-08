@@ -182,6 +182,10 @@ answer. Both are treated as a failed call rather than surfaced to the
 client — the same hedge-over-guess principle as the rest of the
 project.
 
+Superseded in part by the query confidence levels entry: a picked
+photo with a null answer now returns an unsure response. An unknown
+photo id still returns 502.
+
 **Live-tested: semantic matching can compensate for a wrong tagging
 label, but isn't reliable for it.** "Where is my humidifier" matched
 a photo whose description says "air purifier" — Claude bridged the
@@ -205,3 +209,42 @@ matching local development. .dockerignore lists .env and venv/ —
 Docker doesn't read .gitignore, so without them secrets would be baked
 into the image. Secrets are set with fly secrets set; .env never ships
 in the image.
+
+**Query confidence levels (SCRUM-31: 45, 46, 47), Nov 2026.**
+Decision: /query returns one of three confidence levels in a strict
+tool schema field: confident, unsure or none.
+- confident returns the matched photo response as before.
+- unsure returns {"matched": false, "confidence": "unsure", "unclear":
+  true, "message": <answer>, "candidate": {image_url, room_name,
+  captured_at}}. The user sees the closest photo, labeled as uncertain.
+- none returns the standard no-match response.
+
+Reason: The acceptance criterion says the system should say a result
+is unclear instead of returning the wrong photo. A two-state
+matched/not-matched response gave no way to express a weak match. A
+flathead screwdriver question returned no match because the stored
+description of the drawer photo did not name the tool.
+
+Fail-closed rules. Each downgrade or fallback logs a warning:
+- resolve_confidence(): none that arrives with a photo id returns the
+  no-match response.
+- resolve_confidence(): confident or unsure with no photo id is
+  downgraded to none and returns the no-match response.
+- resolve_confidence(): confident with an empty or whitespace-only
+  answer is downgraded to unsure, so a confident match is never
+  returned without an answer.
+- unclear_message(): an unsure response (including one downgraded
+  from confident) with an empty or whitespace-only answer uses
+  UNCLEAR_FALLBACK_MESSAGE as its message.
+- ask_question(), before resolve_confidence() runs: a photo id that is
+  not in the candidate list still returns 502, because it is a
+  malformed model response. Not checked when confidence is none, since
+  a none reply's id is ignored.
+
+Consequences:
+- The mobile response type needs a third variant (unclear with
+  candidate).
+- Query-step confidence depends on tagging quality. Hallucinated flat
+  claims in stored descriptions (photo 26: "paintbrushes", "wooden
+  ruler") still pass through, so the tagging prompt and model
+  comparison are the next work item.
