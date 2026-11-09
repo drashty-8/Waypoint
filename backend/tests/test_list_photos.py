@@ -13,8 +13,11 @@ def minutes_ago(minutes: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(minutes=minutes)).isoformat()
 
 
-def photo_row(photo_id, tagging_status, created_at, room_name="Bedroom"):
-    """A photos row as Supabase returns it when selected with LIST_COLUMNS."""
+def photo_row(photo_id, tagging_status, created_at, room_name="Bedroom", tagging_started_at=None):
+    """A photos row as Supabase returns it when selected with LIST_COLUMNS.
+
+    tagging_started_at defaults to None, so staleness falls back to created_at.
+    """
     beacons = None
     if room_name is not None:
         beacons = {"room_name": room_name}
@@ -23,6 +26,7 @@ def photo_row(photo_id, tagging_status, created_at, room_name="Bedroom"):
         "id": photo_id,
         "created_at": created_at,
         "tagging_status": tagging_status,
+        "tagging_started_at": tagging_started_at,
         "image_url": IMAGE_URL,
         "beacons": beacons,
     }
@@ -56,7 +60,17 @@ def test_failed_photo_is_included(client, retag_query):
     assert returned_ids(response) == [1]
 
 
+def test_lookup_selects_tagging_started_at(client, fake_supabase, retag_query):
+    retag_query.execute.return_value.data = []
+
+    client.get("/photos", params={"needs_retag": "true"})
+
+    selected_columns = fake_supabase.tables["photos"].select.call_args.args[0]
+    assert "tagging_started_at" in selected_columns
+
+
 def test_stale_pending_photo_is_included(client, retag_query):
+    # tagging_started_at is null here, so staleness falls back to created_at.
     retag_query.execute.return_value.data = [photo_row(1, "pending", minutes_ago(10))]
 
     response = client.get("/photos", params={"needs_retag": "true"})
@@ -71,6 +85,28 @@ def test_fresh_pending_photo_is_excluded(client, retag_query):
 
     assert response.status_code == 200
     assert response.json() == []
+
+
+def test_pending_photo_with_recent_tagging_start_is_excluded(client, retag_query):
+    # Created long ago, but tagging (re)started a minute ago, so it isn't stuck.
+    retag_query.execute.return_value.data = [
+        photo_row(1, "pending", minutes_ago(60), tagging_started_at=minutes_ago(1))
+    ]
+
+    response = client.get("/photos", params={"needs_retag": "true"})
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_pending_photo_with_old_tagging_start_is_included(client, retag_query):
+    retag_query.execute.return_value.data = [
+        photo_row(1, "pending", minutes_ago(60), tagging_started_at=minutes_ago(10))
+    ]
+
+    response = client.get("/photos", params={"needs_retag": "true"})
+
+    assert returned_ids(response) == [1]
 
 
 def test_complete_photo_is_excluded(client, retag_query):
