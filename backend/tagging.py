@@ -118,7 +118,7 @@ def mark_tagging_failed(photo_id: int) -> None:
 async def record_failure(photo_id: int) -> None:
     """Mark the photo as failed, logging (not raising) if that update itself fails.
 
-    Retrying failed photos later is SCRUM-29; this only records the status.
+    Retrying failed photos later is POST /photos/{id}/retag; this only records the status.
     """
     try:
         # Synchronous Supabase call, so it runs in a worker thread (see trigger_tagging).
@@ -223,7 +223,8 @@ async def trigger_tagging(photo_id: int) -> None:
 
     The Claude call itself is retried twice by the Anthropic SDK (see
     claude_client.py) before it counts as a failure here. Nothing in this
-    function retries; re-tagging photos already marked 'failed' is SCRUM-29.
+    function retries; re-tagging photos already marked 'failed' is
+    POST /photos/{id}/retag.
     """
     # Imported here rather than at the top of the file because
     # routers/photos.py imports this module. Importing routers.photos

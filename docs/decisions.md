@@ -156,19 +156,21 @@ conversion happens in memory at tagging time (pillow-heif, same pixel
 dimensions, JPEG quality 90); the stored file and image_url stay the
 untouched HEIC, so nothing is lost and the conversion can change later
 without re-uploading. Cost: the conversion reruns on every tagging
-attempt, including SCRUM-29 retries — small next to the Claude call.
+attempt, including POST /photos/{id}/retag retries — small next to the
+Claude call.
 
 **Every trigger_tagging failure sets tagging_status = 'failed'; retry
-logic is SCRUM-29.** Missing or deleted row, lookup error, download
-error, unrecognized type, failed HEIC conversion, oversized image,
-Claude error or no tool call, and failed save all take the same path,
-so a broken photo is distinguishable from one still pending. For a
-deleted row the update matches nothing — a harmless no-op. If the
-database itself is down, marking failed likely fails too and the photo
-stays pending, so SCRUM-29 should treat a long-stale 'pending' as
-possibly failed. Telling retryable failures (rate limit, 5xx, network)
-from permanent ones is left to SCRUM-29; the logged exception type is
-enough to do it.
+logic is POST /photos/{id}/retag.** Missing or deleted row, lookup
+error, download error, unrecognized type, failed HEIC conversion,
+oversized image, Claude error or no tool call, and failed save all take
+the same path, so a broken photo is distinguishable from one still
+pending. For a deleted row the update matches nothing — a harmless
+no-op. If the database itself is down, marking failed likely fails too
+and the photo stays pending, so POST /photos/{id}/retag should treat a
+long-stale 'pending' as possibly failed. Retryable failures (rate
+limit, 5xx, network) aren't told apart from permanent ones yet; POST
+/photos/{id}/retag retries every failed photo. The logged exception
+type is enough to make the distinction later.
 
 **POST /query forces a tool call on claude-haiku-4-5-20251001, the
 same model as tagging.** Newer models (Opus 5.5, Sonnet 5.5) reject a
@@ -289,3 +291,12 @@ step still uses Haiku 4.5 with a forced tool call and has not been
 compared. Haiku 4.5 is listed as a legacy model on Anthropic's model
 page, with a retirement date of not sooner than October 15, 2026 and
 no firm date announced.
+
+**Tagging start time: staleness is measured from tagging_started_at,
+Nov 2026.**
+Decision: a pending photo is stuck when its tagging_started_at (or
+created_at when null) is older than 5 minutes; retag claims a photo by
+matching the status and tagging_started_at it read.
+
+Reason: created_at never changes, so a retried photo looked stale and a
+second request could start a second tagging.
