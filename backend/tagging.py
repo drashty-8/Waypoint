@@ -153,14 +153,28 @@ def prepare_image_for_claude(image_bytes: bytes, image_type: str) -> tuple[bytes
     return output.getvalue(), "image/jpeg"
 
 
-def request_tags(image_base64: str, media_type: str):
-    """Send the base64-encoded image to Claude and return its response."""
+def request_tags(
+    image_base64: str,
+    media_type: str,
+    model: str = TAGGING_MODEL,
+    prompt: str = TAGGING_PROMPT,
+    tool_choice: dict | None = None,
+):
+    """Send the base64-encoded image to Claude and return its response.
+
+    trigger_tagging passes only the image, so it always uses the defaults.
+    model, prompt and tool_choice exist for scripts/compare_tagging.py,
+    which tries other models and prompts on the same photos.
+    """
+    if tool_choice is None:
+        # Make Claude answer by calling the tool, not with plain text.
+        tool_choice = {"type": "tool", "name": TAGGING_TOOL["name"]}
+
     return client.messages.create(
-        model=TAGGING_MODEL,
+        model=model,
         max_tokens=TAGGING_MAX_TOKENS,
         tools=[TAGGING_TOOL],
-        # Make Claude answer by calling the tool, not with plain text.
-        tool_choice={"type": "tool", "name": TAGGING_TOOL["name"]},
+        tool_choice=tool_choice,
         messages=[{
             "role": "user",
             "content": [
@@ -168,7 +182,7 @@ def request_tags(image_base64: str, media_type: str):
                     "type": "image",
                     "source": {"type": "base64", "media_type": media_type, "data": image_base64},
                 },
-                {"type": "text", "text": TAGGING_PROMPT},
+                {"type": "text", "text": prompt},
             ],
         }],
     )
