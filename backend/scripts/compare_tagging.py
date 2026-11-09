@@ -15,9 +15,11 @@ Usage (from backend/, using the backend venv):
         [--prompt-file path/to/prompt.txt]
         [--tool-choice forced|auto]
 
---tool-choice forced (the default) is what the backend does. Newer models
-such as Opus 5.5 and Sonnet 5.5 reject a forced tool call with a 400, so
-use --tool-choice auto for those. It applies to every model in the run.
+--tool-choice forced (the script's default) requires the tool call and
+works with models that allow it, such as Haiku 4.5. The backend itself
+now uses auto. Newer models such as Opus 5.5 and Sonnet 5.5 reject a
+forced tool call with a 400, so use --tool-choice auto for those. It
+applies to every model in the run.
 """
 
 import argparse
@@ -45,6 +47,7 @@ from routers.photos import detect_image_type  # noqa: E402
 from tagging import (  # noqa: E402
     MAX_CLAUDE_IMAGE_BASE64_BYTES,
     TAGGING_PROMPT,
+    TAGGING_TOOL,
     download_image,
     fetch_photo_row,
     find_tag_result,
@@ -69,7 +72,10 @@ def parse_args():
     )
     parser.add_argument(
         "--tool-choice", choices=["forced", "auto"], default="forced",
-        help="forced (default) requires the tool call, like the backend; auto lets the model choose.",
+        help=(
+            "auto lets the model reply with text instead of the tool call (the backend's setting); "
+            "forced (default) requires the tool call."
+        ),
     )
     parser.add_argument(
         "--repeat", type=int, default=1,
@@ -83,13 +89,16 @@ def parse_args():
     return args
 
 
-def tool_choice_for(mode: str) -> dict | None:
-    """Return the tool_choice to pass to request_tags for this mode."""
+def tool_choice_for(mode: str) -> dict:
+    """Return the tool_choice to pass to request_tags for this mode.
+
+    Always passed explicitly, so this script doesn't change behavior if
+    request_tags' default changes.
+    """
     if mode == "auto":
         return {"type": "auto"}
 
-    # None makes request_tags use its default: the forced tool call.
-    return None
+    return {"type": "tool", "name": TAGGING_TOOL["name"]}
 
 
 def load_photo_for_claude(photo_id: int) -> tuple[str, str] | None:

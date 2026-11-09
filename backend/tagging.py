@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 # How long to wait for the image download before giving up.
 DOWNLOAD_TIMEOUT_SECONDS = 30
 
-TAGGING_MODEL = "claude-haiku-4-5-20251001"
+TAGGING_MODEL = "claude-sonnet-5-5"
 # A tagging answer is a few hundred tokens. This is only a ceiling, and
 # unused tokens aren't billed, so it's set with plenty of room to spare.
 TAGGING_MAX_TOKENS = 4096
@@ -167,8 +167,10 @@ def request_tags(
     which tries other models and prompts on the same photos.
     """
     if tool_choice is None:
-        # Make Claude answer by calling the tool, not with plain text.
-        tool_choice = {"type": "tool", "name": TAGGING_TOOL["name"]}
+        # Sonnet 5.5 rejects a forced tool call ({"type": "tool", ...}) with
+        # a 400, so Claude chooses whether to call the tool. A reply without
+        # the tool call is caught by find_tag_result and marked failed.
+        tool_choice = {"type": "auto"}
 
     return client.messages.create(
         model=model,

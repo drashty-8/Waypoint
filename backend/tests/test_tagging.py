@@ -118,6 +118,47 @@ def test_heic_photo_is_converted_to_jpeg_before_sending(fake_supabase, monkeypat
     assert fake_supabase.tables["photos"].update.call_args.args[0]["tagging_status"] == "complete"
 
 
+@pytest.mark.usefixtures("photo_lookup", "downloaded_urls")
+def test_text_only_reply_under_auto_tool_choice_is_marked_failed(fake_supabase, fake_claude):
+    # With auto tool choice, Claude can answer in plain text instead of
+    # calling the tool. That reply has no tags, so the photo must be failed.
+    text_block = SimpleNamespace(type="text", text="This photo shows a desk with a charger.")
+    fake_claude.messages.create.return_value = claude_response("end_turn", [text_block])
+
+    asyncio.run(tagging.trigger_tagging(PHOTO_ID))
+
+    request = fake_claude.messages.create.call_args.kwargs
+    assert request["model"] == "claude-sonnet-5-5"
+    assert request["tool_choice"] == {"type": "auto"}
+
+    photos_table = fake_supabase.tables["photos"]
+    photos_table.update.assert_called_once_with({"tagging_status": "failed"})
+    photos_table.update.return_value.eq.assert_called_once_with("id", PHOTO_ID)
+
+
+@pytest.mark.usefixtures("photo_lookup", "downloaded_urls")
+def test_tool_call_under_auto_tool_choice_completes_tagging(fake_supabase, fake_claude):
+    # With auto tool choice, Claude may write some text before the tool
+    # call. The tool call is still found and saved.
+    text_block = SimpleNamespace(type="text", text="I'll record the tags for this photo.")
+    tool_block = SimpleNamespace(type="tool_use", name="record_photo_tags", input=TAG_RESULT)
+    fake_claude.messages.create.return_value = claude_response("tool_use", [text_block, tool_block])
+
+    asyncio.run(tagging.trigger_tagging(PHOTO_ID))
+
+    request = fake_claude.messages.create.call_args.kwargs
+    assert request["model"] == "claude-sonnet-5-5"
+    assert request["tool_choice"] == {"type": "auto"}
+
+    photos_table = fake_supabase.tables["photos"]
+    photos_table.update.assert_called_once_with({
+        "description": TAG_RESULT["description"],
+        "tags": TAG_RESULT["tags"],
+        "tagging_status": "complete",
+    })
+    photos_table.update.return_value.eq.assert_called_once_with("id", PHOTO_ID)
+
+
 def raise_connection_error(fake_claude):
     request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
     fake_claude.messages.create.side_effect = anthropic.APIConnectionError(request=request)

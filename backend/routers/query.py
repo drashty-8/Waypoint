@@ -21,7 +21,8 @@ NO_MATCH_RESPONSE = {"matched": False, "confidence": "none", "message": "no matc
 # answer empty, so the client always has something to show.
 UNCLEAR_FALLBACK_MESSAGE = "found a possible match, but couldn't confirm it answers the question"
 
-# Same model as tagging. It supports forced tool use (tool_choice "tool"),
+# Chosen independently of the tagging model: query uses Haiku 4.5 with a
+# forced tool call. It supports forced tool use (tool_choice "tool"),
 # which the newest models (e.g. Claude Opus 5.5) reject with a 400.
 MATCHING_MODEL = "claude-haiku-4-5-20251001"
 # A match answer is well under a hundred tokens. This is only a ceiling, and

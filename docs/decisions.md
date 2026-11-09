@@ -146,6 +146,10 @@ newer models (Opus 5.5, Fable 5.1) reject a forced tool_choice, so a
 future model switch means tool_choice "auto" plus the strict tool, or
 structured outputs.
 
+Superseded by the tagging model entry below: tagging now uses
+claude-sonnet-5-5 with tool_choice auto, and a reply with no tool call
+marks the photo failed.
+
 **HEIC/HEIF is converted to JPEG before sending to Claude; Storage
 keeps the original.** Claude only accepts JPEG, PNG, GIF and WebP. The
 conversion happens in memory at tagging time (pillow-heif, same pixel
@@ -248,3 +252,40 @@ Consequences:
   claims in stored descriptions (photo 26: "paintbrushes", "wooden
   ruler") still pass through, so the tagging prompt and model
   comparison are the next work item.
+
+**Tagging model: Sonnet 5.5 with automatic tool choice, Nov 2026.**
+Decision: Tagging uses claude-sonnet-5-5 with tool_choice auto. The
+tagging prompt is unchanged. A reply with no tool call marks the photo
+failed.
+
+Reason: Three models were compared with the same prompt on 5 held-out
+photos (3 runs each) plus 2 earlier photos (1 to 3 runs each). One
+reviewer checked each description against its photo. On the held-out
+photos, description errors per 15 descriptions: Haiku 4.5 about 55,
+Haiku 5.5 19, Sonnet 5.5 4. Haiku 4.5 repeatedly described objects
+that are absent (paintbrushes, screwdrivers, skateboard decks),
+misread brand names, and missed a smartwatch in 3 of 3 runs.
+
+Cost and time per photo: Haiku 4.5 $0.0042 and 6.2 s, Haiku 5.5
+$0.0009 and 5.6 s, Sonnet 5.5 $0.0191 and 8.5 s. Prices per million
+tokens (input / output) are from Anthropic's model pages: Haiku 4.5
+$1 / $5, Haiku 5.5 $0.10 / $0.50 for prompts up to 100,000 tokens,
+Sonnet 5.5 $2 / $10. The newer models use a tokenizer that counts
+about 30% more tokens for the same text.
+
+Why auto: an earlier note says newer models reject a forced tool call.
+Sonnet 5.5 was run only with auto in the comparison, and none of its 35
+calls returned text only.
+
+Not adopted: a revised prompt (v2) with rules on absent objects,
+subtypes, duplicates and tags. Sonnet's error count did not change (4
+under v1, 5 under v2) and brand mentions dropped (Pepsi missing in one
+run).
+
+Known issues: Sonnet misspelled Aveeno in 5 of 6 runs on one photo and
+sometimes turns a hedged description into a plain tag. Photos tagged by
+Haiku 4.5 keep their old descriptions until tagged again. The query
+step still uses Haiku 4.5 with a forced tool call and has not been
+compared. Haiku 4.5 is listed as a legacy model on Anthropic's model
+page, with a retirement date of not sooner than October 15, 2026 and
+no firm date announced.
