@@ -146,25 +146,31 @@ newer models (Opus 5.5, Fable 5.1) reject a forced tool_choice, so a
 future model switch means tool_choice "auto" plus the strict tool, or
 structured outputs.
 
+Superseded by the tagging model entry below: tagging now uses
+claude-sonnet-5-5 with tool_choice auto, and a reply with no tool call
+marks the photo failed.
+
 **HEIC/HEIF is converted to JPEG before sending to Claude; Storage
 keeps the original.** Claude only accepts JPEG, PNG, GIF and WebP. The
 conversion happens in memory at tagging time (pillow-heif, same pixel
 dimensions, JPEG quality 90); the stored file and image_url stay the
 untouched HEIC, so nothing is lost and the conversion can change later
 without re-uploading. Cost: the conversion reruns on every tagging
-attempt, including SCRUM-29 retries — small next to the Claude call.
+attempt, including POST /photos/{id}/retag retries — small next to the
+Claude call.
 
 **Every trigger_tagging failure sets tagging_status = 'failed'; retry
-logic is SCRUM-29.** Missing or deleted row, lookup error, download
-error, unrecognized type, failed HEIC conversion, oversized image,
-Claude error or no tool call, and failed save all take the same path,
-so a broken photo is distinguishable from one still pending. For a
-deleted row the update matches nothing — a harmless no-op. If the
-database itself is down, marking failed likely fails too and the photo
-stays pending, so SCRUM-29 should treat a long-stale 'pending' as
-possibly failed. Telling retryable failures (rate limit, 5xx, network)
-from permanent ones is left to SCRUM-29; the logged exception type is
-enough to do it.
+logic is POST /photos/{id}/retag.** Missing or deleted row, lookup
+error, download error, unrecognized type, failed HEIC conversion,
+oversized image, Claude error or no tool call, and failed save all take
+the same path, so a broken photo is distinguishable from one still
+pending. For a deleted row the update matches nothing — a harmless
+no-op. If the database itself is down, marking failed likely fails too
+and the photo stays pending, so POST /photos/{id}/retag should treat a
+long-stale 'pending' as possibly failed. Retryable failures (rate
+limit, 5xx, network) aren't told apart from permanent ones yet; POST
+/photos/{id}/retag retries every failed photo. The logged exception
+type is enough to make the distinction later.
 
 **POST /query forces a tool call on claude-haiku-4-5-20251001, the
 same model as tagging.** Newer models (Opus 5.5, Sonnet 5.5) reject a
@@ -181,6 +187,10 @@ photo id that isn't in the candidate list, or pick a photo with a null
 answer. Both are treated as a failed call rather than surfaced to the
 client — the same hedge-over-guess principle as the rest of the
 project.
+
+Superseded in part by the query confidence levels entry: a picked
+photo with a null answer now returns an unsure response. An unknown
+photo id still returns 502.
 
 **Live-tested: semantic matching can compensate for a wrong tagging
 label, but isn't reliable for it.** "Where is my humidifier" matched
@@ -205,3 +215,88 @@ matching local development. .dockerignore lists .env and venv/ —
 Docker doesn't read .gitignore, so without them secrets would be baked
 into the image. Secrets are set with fly secrets set; .env never ships
 in the image.
+
+**Query confidence levels (SCRUM-31: 45, 46, 47), Nov 2026.**
+Decision: /query returns one of three confidence levels in a strict
+tool schema field: confident, unsure or none.
+- confident returns the matched photo response as before.
+- unsure returns {"matched": false, "confidence": "unsure", "unclear":
+  true, "message": <answer>, "candidate": {image_url, room_name,
+  captured_at}}. The user sees the closest photo, labeled as uncertain.
+- none returns the standard no-match response.
+
+Reason: The acceptance criterion says the system should say a result
+is unclear instead of returning the wrong photo. A two-state
+matched/not-matched response gave no way to express a weak match. A
+flathead screwdriver question returned no match because the stored
+description of the drawer photo did not name the tool.
+
+Fail-closed rules. Each downgrade or fallback logs a warning:
+- resolve_confidence(): none that arrives with a photo id returns the
+  no-match response.
+- resolve_confidence(): confident or unsure with no photo id is
+  downgraded to none and returns the no-match response.
+- resolve_confidence(): confident with an empty or whitespace-only
+  answer is downgraded to unsure, so a confident match is never
+  returned without an answer.
+- unclear_message(): an unsure response (including one downgraded
+  from confident) with an empty or whitespace-only answer uses
+  UNCLEAR_FALLBACK_MESSAGE as its message.
+- ask_question(), before resolve_confidence() runs: a photo id that is
+  not in the candidate list still returns 502, because it is a
+  malformed model response. Not checked when confidence is none, since
+  a none reply's id is ignored.
+
+Consequences:
+- The mobile response type needs a third variant (unclear with
+  candidate).
+- Query-step confidence depends on tagging quality. Hallucinated flat
+  claims in stored descriptions (photo 26: "paintbrushes", "wooden
+  ruler") still pass through, so the tagging prompt and model
+  comparison are the next work item.
+
+**Tagging model: Sonnet 5.5 with automatic tool choice, Nov 2026.**
+Decision: Tagging uses claude-sonnet-5-5 with tool_choice auto. The
+tagging prompt is unchanged. A reply with no tool call marks the photo
+failed.
+
+Reason: Three models were compared with the same prompt on 5 held-out
+photos (3 runs each) plus 2 earlier photos (1 to 3 runs each). One
+reviewer checked each description against its photo. On the held-out
+photos, description errors per 15 descriptions: Haiku 4.5 about 55,
+Haiku 5.5 19, Sonnet 5.5 4. Haiku 4.5 repeatedly described objects
+that are absent (paintbrushes, screwdrivers, skateboard decks),
+misread brand names, and missed a smartwatch in 3 of 3 runs.
+
+Cost and time per photo: Haiku 4.5 $0.0042 and 6.2 s, Haiku 5.5
+$0.0009 and 5.6 s, Sonnet 5.5 $0.0191 and 8.5 s. Prices per million
+tokens (input / output) are from Anthropic's model pages: Haiku 4.5
+$1 / $5, Haiku 5.5 $0.10 / $0.50 for prompts up to 100,000 tokens,
+Sonnet 5.5 $2 / $10. The newer models use a tokenizer that counts
+about 30% more tokens for the same text.
+
+Why auto: an earlier note says newer models reject a forced tool call.
+Sonnet 5.5 was run only with auto in the comparison, and none of its 35
+calls returned text only.
+
+Not adopted: a revised prompt (v2) with rules on absent objects,
+subtypes, duplicates and tags. Sonnet's error count did not change (4
+under v1, 5 under v2) and brand mentions dropped (Pepsi missing in one
+run).
+
+Known issues: Sonnet misspelled Aveeno in 5 of 6 runs on one photo and
+sometimes turns a hedged description into a plain tag. Photos tagged by
+Haiku 4.5 keep their old descriptions until tagged again. The query
+step still uses Haiku 4.5 with a forced tool call and has not been
+compared. Haiku 4.5 is listed as a legacy model on Anthropic's model
+page, with a retirement date of not sooner than October 15, 2026 and
+no firm date announced.
+
+**Tagging start time: staleness is measured from tagging_started_at,
+Nov 2026.**
+Decision: a pending photo is stuck when its tagging_started_at (or
+created_at when null) is older than 5 minutes; retag claims a photo by
+matching the status and tagging_started_at it read.
+
+Reason: created_at never changes, so a retried photo looked stale and a
+second request could start a second tagging.

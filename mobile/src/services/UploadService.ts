@@ -29,7 +29,7 @@ export async function uploadPhoto(photo: CapturedPhoto): Promise<boolean> {
       formData.append('beacon_minor', String(beacon.minor));
     }
 
-    const response = await fetch(`${BACKEND_URL}/photos`, {
+    const response = await fetch(INGEST_URL, {
       method: 'POST',
       body: formData,
     });

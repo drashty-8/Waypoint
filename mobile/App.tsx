@@ -78,10 +78,10 @@ export default function App() {
     return () => clearInterval(interval);
   }, [photos, updatePhotoStatus]);
 
-  // Android back button from the search screen returns to the camera.
+  // Android back button from the search or beacons screen returns to the camera.
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (screen === 'search') {
+      if (screen === 'search' || screen === 'beacons') {
         setScreen('camera');
         return true;
       }
@@ -183,10 +183,7 @@ export default function App() {
             >
               <Text style={styles.backText}>‹ Back</Text>
             </TouchableOpacity>
-
-            <Text style={styles.beaconHeaderTitle}>Manage Beacons
-            </Text>
-
+            <Text style={styles.beaconHeaderTitle}>Manage Beacons</Text>
           </View>
           <BeaconRegistrationScreen />
         </View>
@@ -274,8 +271,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   backText: { color: 'white', fontSize: 20, fontWeight: '600' },
-  searchHeaderTitle: { color: 'white', fontSize: 20, fontWeight: '600', marginLeft: 4
-  },
+  searchHeaderTitle: { color: 'white', fontSize: 20, fontWeight: '600', marginLeft: 4 },
+
+  // Beacons screen header and camera-screen button (Tommy's branch).
   beaconHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -284,8 +282,7 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
     paddingHorizontal: 8,
   },
-  beaconHeaderTitle: { color: 'white', fontSize: 20, fontWeight: '600', marginLeft: 4
-  },
+  beaconHeaderTitle: { color: 'white', fontSize: 20, fontWeight: '600', marginLeft: 4 },
   beaconButton: {
     position: 'absolute',
     top: 16,
@@ -297,8 +294,5 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'white',
   },
-  beaconButtonText: {
-    color: 'white',
-    fontSize: 16,
-    fontWeight: '600' },
+  beaconButtonText: { color: 'white', fontSize: 16, fontWeight: '600' },
 });

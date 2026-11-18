@@ -1,10 +1,11 @@
 import logging
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query, UploadFile
 import filetype
+from pydantic import BaseModel
 
 from database import supabase
 from tagging import trigger_tagging
@@ -41,6 +42,33 @@ EXTRA_HEIF_BRANDS = {b"mif1", b"msf1", b"heix", b"heim", b"heis", b"hevc", b"hev
 
 # A beacon's major and minor are each 16-bit numbers, so 0 to 65535.
 MAX_BEACON_NUMBER = 65535
+
+# A photo still 'pending' this long after tagging started is assumed stuck
+# (e.g. the server restarted mid-tagging), so it counts as needing a retag.
+# Measured from tagging_started_at, or from created_at when that's null.
+STALE_PENDING_AFTER = timedelta(minutes=5)
+
+# GET /photos page size: used when no limit is sent, and the most allowed.
+DEFAULT_LIST_LIMIT = 50
+MAX_LIST_LIMIT = 200
+
+# Columns GET /photos returns. "beacons(room_name)" follows photos.beacon_id
+# to the beacons table (same as routers/query.py), so room_name comes back
+# in the same query; for a photo with no beacon, "beacons" is None.
+# tagging_started_at is only needed for the needs_retag filter; it isn't
+# part of the response (PhotoSummary leaves it out).
+LIST_COLUMNS = "id, created_at, tagging_status, tagging_started_at, image_url, beacons(room_name)"
+
+
+class PhotoSummary(BaseModel):
+    """One photo in the GET /photos response."""
+
+    id: int
+    created_at: datetime
+    tagging_status: str
+    image_url: str
+    # None when the photo was taken without a beacon.
+    room_name: str | None
 
 
 def detect_image_type(image_bytes: bytes) -> str | None:
@@ -251,11 +279,14 @@ def create_photo(
     # Phase 4: insert the row, retrying once. If both attempts fail, delete
     # the uploaded file so Storage isn't left with an orphan.
     # tagging_status is left out so the database default ('pending') applies.
+    # tagging_started_at is when this tagging attempt began; staleness for
+    # needs_retag and retag is measured from it.
     new_row = {
         "user_id": PLACEHOLDER_USER_ID,
         "captured_at": parsed_captured_at.isoformat(),
         "image_url": image_url,
         "beacon_id": beacon_id,
+        "tagging_started_at": datetime.now(timezone.utc).isoformat(),
     }
 
     try:
@@ -274,3 +305,221 @@ def create_photo(
     background_tasks.add_task(trigger_tagging, photo["id"])
 
     return {"id": photo["id"], "tagging_status": photo["tagging_status"]}
+
+
+def get_current_user_id() -> str:
+    """Return the id of the user making the request.
+
+    Always the shared placeholder for now. When real auth arrives (COMP491),
+    only this function needs to change for GET /photos.
+    """
+    return PLACEHOLDER_USER_ID
+
+
+def created_at_of(row: dict) -> datetime:
+    """The row's created_at as a datetime (Supabase returns it as a string)."""
+    return datetime.fromisoformat(row["created_at"])
+
+
+def tagging_start_of(row: dict) -> datetime:
+    """When the photo's current tagging attempt started.
+
+    tagging_started_at, or created_at when it's null (rows written before
+    the column existed), the same as coalesce(tagging_started_at, created_at).
+    """
+    if row["tagging_started_at"] is None:
+        return created_at_of(row)
+
+    return datetime.fromisoformat(row["tagging_started_at"])
+
+
+def stale_pending_cutoff() -> datetime:
+    """A 'pending' photo whose tagging started before this time counts as stuck.
+
+    Shared by GET /photos?needs_retag=true and POST /photos/{id}/retag so
+    both use the same STALE_PENDING_AFTER threshold.
+    """
+    return datetime.now(timezone.utc) - STALE_PENDING_AFTER
+
+
+def is_due_for_retag(row: dict, cutoff: datetime) -> bool:
+    """True if the photo failed tagging, or is still 'pending' with tagging started before cutoff."""
+    if row["tagging_status"] == "failed":
+        return True
+
+    if row["tagging_status"] == "pending":
+        return tagging_start_of(row) < cutoff
+
+    return False
+
+
+def fetch_recent_photos(user_id: str, limit: int) -> list[dict]:
+    """Return the user's newest photos, newest first, at most limit of them."""
+    result = (
+        supabase.table("photos")
+        .select(LIST_COLUMNS)
+        .eq("user_id", user_id)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return result.data
+
+
+def fetch_photos_needing_retag(user_id: str, limit: int) -> list[dict]:
+    """Return the user's failed and stale pending photos, newest first, at most limit of them.
+
+    The database query only narrows to 'failed' and 'pending' rows. Which
+    pending rows are old enough, the ordering and the limit are all applied
+    here in Python, so the tests can check them against the fake Supabase.
+    """
+    result = (
+        supabase.table("photos")
+        .select(LIST_COLUMNS)
+        .eq("user_id", user_id)
+        .in_("tagging_status", ["failed", "pending"])
+        .execute()
+    )
+
+    cutoff = stale_pending_cutoff()
+
+    rows = []
+    for row in result.data:
+        if is_due_for_retag(row, cutoff):
+            rows.append(row)
+
+    rows.sort(key=created_at_of, reverse=True)
+    return rows[:limit]
+
+
+def to_photo_summary(row: dict) -> PhotoSummary:
+    """Turn a photos row fetched with LIST_COLUMNS into a response item."""
+    room_name = None
+    if row["beacons"] is not None:
+        room_name = row["beacons"]["room_name"]
+
+    return PhotoSummary(
+        id=row["id"],
+        created_at=row["created_at"],
+        tagging_status=row["tagging_status"],
+        image_url=row["image_url"],
+        room_name=room_name,
+    )
+
+
+@router.get("", response_model=list[PhotoSummary])
+def list_photos(
+    needs_retag: bool = False,
+    limit: int = Query(DEFAULT_LIST_LIMIT, ge=1, le=MAX_LIST_LIMIT),
+):
+    """List the user's photos, newest first.
+
+    With needs_retag=true, only photos whose tagging failed, or that have
+    been 'pending' for longer than STALE_PENDING_AFTER, are returned.
+    """
+    user_id = get_current_user_id()
+
+    try:
+        if needs_retag:
+            rows = fetch_photos_needing_retag(user_id, limit)
+        else:
+            rows = fetch_recent_photos(user_id, limit)
+    except Exception:
+        logger.exception("Photo list lookup failed")
+        raise HTTPException(status_code=500, detail="Could not load photos")
+
+    photo_summaries = []
+    for row in rows:
+        photo_summaries.append(to_photo_summary(row))
+
+    return photo_summaries
+
+
+def fetch_photo_status(photo_id: int, user_id: str) -> dict | None:
+    """Return the photo's id, created_at, tagging_status and tagging_started_at, or None if this user has no such photo.
+
+    Filtering on user_id means another user's photo looks the same as one
+    that doesn't exist, so the caller can't tell the two apart.
+    """
+    result = (
+        supabase.table("photos")
+        .select("id, created_at, tagging_status, tagging_started_at")
+        .eq("id", photo_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+
+    if len(result.data) == 0:
+        return None
+
+    return result.data[0]
+
+
+def claim_photo_for_retag(photo_id: int, user_id: str, photo: dict) -> bool:
+    """Set the photo to 'pending' with a new tagging_started_at, only if it hasn't changed since it was read.
+
+    photo is the row fetch_photo_status read. The update only matches while
+    tagging_status and tagging_started_at still have the values read, and
+    the database checks that at the moment of writing. A successful claim
+    changes tagging_started_at, so if two requests read the same row, only
+    the first one's update matches; the second finds nothing and returns
+    False. It also returns False if tagging finished in between.
+    """
+    query = (
+        supabase.table("photos")
+        .update({
+            "tagging_status": "pending",
+            "tagging_started_at": datetime.now(timezone.utc).isoformat(),
+        })
+        .eq("id", photo_id)
+        .eq("user_id", user_id)
+        .eq("tagging_status", photo["tagging_status"])
+    )
+
+    # SQL's "= NULL" never matches anything, so a null value has to be
+    # matched with "is null" instead.
+    if photo["tagging_started_at"] is None:
+        query = query.is_("tagging_started_at", "null")
+    else:
+        query = query.eq("tagging_started_at", photo["tagging_started_at"])
+
+    result = query.execute()
+    return len(result.data) > 0
+
+
+@router.post("/{photo_id}/retag", status_code=202)
+def retag_photo(photo_id: int, background_tasks: BackgroundTasks):
+    """Start tagging again for a photo whose tagging failed or got stuck.
+
+    Eligible photos are the same ones GET /photos?needs_retag=true lists:
+    'failed', or 'pending' with tagging started more than
+    STALE_PENDING_AFTER ago.
+    """
+    user_id = get_current_user_id()
+
+    try:
+        photo = fetch_photo_status(photo_id, user_id)
+    except Exception:
+        logger.exception("Photo lookup failed for retag of photo %s", photo_id)
+        raise HTTPException(status_code=500, detail="Could not load photo")
+
+    if photo is None:
+        raise HTTPException(status_code=404, detail="photo not found")
+
+    if not is_due_for_retag(photo, stale_pending_cutoff()):
+        raise HTTPException(status_code=409, detail="photo is not eligible for retagging")
+
+    try:
+        claimed = claim_photo_for_retag(photo_id, user_id, photo)
+    except Exception:
+        logger.exception("Could not set photo %s to pending for retag", photo_id)
+        raise HTTPException(status_code=500, detail="Could not update photo")
+
+    if not claimed:
+        raise HTTPException(status_code=409, detail="photo is not eligible for retagging")
+
+    # Same as POST /photos: tagging runs after the response is sent.
+    background_tasks.add_task(trigger_tagging, photo_id)
+
+    return {"id": photo_id, "tagging_status": "pending"}

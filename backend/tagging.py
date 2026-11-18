@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 # How long to wait for the image download before giving up.
 DOWNLOAD_TIMEOUT_SECONDS = 30
 
-TAGGING_MODEL = "claude-haiku-4-5-20251001"
+TAGGING_MODEL = "claude-sonnet-5-5"
 # A tagging answer is a few hundred tokens. This is only a ceiling, and
 # unused tokens aren't billed, so it's set with plenty of room to spare.
 TAGGING_MAX_TOKENS = 4096
@@ -118,7 +118,7 @@ def mark_tagging_failed(photo_id: int) -> None:
 async def record_failure(photo_id: int) -> None:
     """Mark the photo as failed, logging (not raising) if that update itself fails.
 
-    Retrying failed photos later is SCRUM-29; this only records the status.
+    Retrying failed photos later is POST /photos/{id}/retag; this only records the status.
     """
     try:
         # Synchronous Supabase call, so it runs in a worker thread (see trigger_tagging).
@@ -153,14 +153,30 @@ def prepare_image_for_claude(image_bytes: bytes, image_type: str) -> tuple[bytes
     return output.getvalue(), "image/jpeg"
 
 
-def request_tags(image_base64: str, media_type: str):
-    """Send the base64-encoded image to Claude and return its response."""
+def request_tags(
+    image_base64: str,
+    media_type: str,
+    model: str = TAGGING_MODEL,
+    prompt: str = TAGGING_PROMPT,
+    tool_choice: dict | None = None,
+):
+    """Send the base64-encoded image to Claude and return its response.
+
+    trigger_tagging passes only the image, so it always uses the defaults.
+    model, prompt and tool_choice exist for scripts/compare_tagging.py,
+    which tries other models and prompts on the same photos.
+    """
+    if tool_choice is None:
+        # Sonnet 5.5 rejects a forced tool call ({"type": "tool", ...}) with
+        # a 400, so Claude chooses whether to call the tool. A reply without
+        # the tool call is caught by find_tag_result and marked failed.
+        tool_choice = {"type": "auto"}
+
     return client.messages.create(
-        model=TAGGING_MODEL,
+        model=model,
         max_tokens=TAGGING_MAX_TOKENS,
         tools=[TAGGING_TOOL],
-        # Make Claude answer by calling the tool, not with plain text.
-        tool_choice={"type": "tool", "name": TAGGING_TOOL["name"]},
+        tool_choice=tool_choice,
         messages=[{
             "role": "user",
             "content": [
@@ -168,7 +184,7 @@ def request_tags(image_base64: str, media_type: str):
                     "type": "image",
                     "source": {"type": "base64", "media_type": media_type, "data": image_base64},
                 },
-                {"type": "text", "text": TAGGING_PROMPT},
+                {"type": "text", "text": prompt},
             ],
         }],
     )
@@ -203,8 +219,12 @@ async def trigger_tagging(photo_id: int) -> None:
     It runs as a background task after POST /photos has already
     responded, so failures are logged rather than raised. Every failure
     path tries to set tagging_status to 'failed'; if the row no longer
-    exists, that update matches nothing and does nothing. There's no
-    retrying here; that's SCRUM-29.
+    exists, that update matches nothing and does nothing.
+
+    The Claude call itself is retried twice by the Anthropic SDK (see
+    claude_client.py) before it counts as a failure here. Nothing in this
+    function retries; re-tagging photos already marked 'failed' is
+    POST /photos/{id}/retag.
     """
     # Imported here rather than at the top of the file because
     # routers/photos.py imports this module. Importing routers.photos

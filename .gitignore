@@ -45,3 +45,6 @@ Thumbs.db
 
 # Claude
 .claude/settings.local.json
+
+# Local tagging model/prompt comparison outputs
+eval/

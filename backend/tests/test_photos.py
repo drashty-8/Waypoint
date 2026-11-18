@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
@@ -129,7 +130,15 @@ def test_upload_with_beacon_returns_201_inserts_row_and_starts_tagging(client, p
     assert response.status_code == 201
     assert response.json() == {"id": NEW_PHOTO_ID, "tagging_status": "pending"}
 
-    inserted_row = photos_supabase.tables["photos"].insert.call_args.args[0]
+    # Copied so popping tagging_started_at doesn't change the recorded call.
+    inserted_row = dict(photos_supabase.tables["photos"].insert.call_args.args[0])
+
+    # tagging_started_at is "now", so check it's a recent UTC time rather
+    # than an exact value.
+    tagging_started_at = datetime.fromisoformat(inserted_row.pop("tagging_started_at"))
+    assert tagging_started_at.utcoffset() == timedelta(0)
+    assert datetime.now(timezone.utc) - tagging_started_at < timedelta(minutes=1)
+
     assert inserted_row == {
         "user_id": photos.PLACEHOLDER_USER_ID,
         "captured_at": "2026-09-26T14:00:00+00:00",

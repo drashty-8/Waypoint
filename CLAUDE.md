@@ -26,6 +26,9 @@ leave my charger?").
   ON UPDATE CASCADE / ON DELETE RESTRICT
 - tagging_status text, NOT NULL, default 'pending',
   CHECK IN ('pending', 'complete', 'failed')
+- tagging_started_at timestamptz, nullable — set at insert and at each
+  retag claim; used for stuck-pending detection, with created_at as the
+  fallback when null
 
 ### beacons
 - id int8, PK
