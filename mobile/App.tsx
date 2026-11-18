@@ -16,10 +16,11 @@ import { initBle } from './src/services/BleService';
 import { retryPendingUploads } from './src/services/UploadService';
 import { loadPhotos, savePhotos } from './src/services/PhotoStore';
 import type { CapturedPhoto } from './src/types';
+import BeaconRegistrationScreen from './src/screens/BeaconRegistrationScreen';
 
 const RETRY_INTERVAL_MS = 30000;
 
-type Screen = 'camera' | 'gallery' | 'search';
+type Screen = 'camera' | 'gallery' | 'search' | 'beacons';
 
 const STATUS_LABELS: Record<CapturedPhoto['uploadStatus'], string> = {
   pending: 'Waiting to upload',
@@ -77,10 +78,10 @@ export default function App() {
     return () => clearInterval(interval);
   }, [photos, updatePhotoStatus]);
 
-  // Android back button from the search screen returns to the camera.
+  // Android back button from the search or beacons screen returns to the camera.
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (screen === 'search') {
+      if (screen === 'search' || screen === 'beacons') {
         setScreen('camera');
         return true;
       }
@@ -110,6 +111,15 @@ export default function App() {
       {screen === 'camera' && (
         <View style={{ flex: 1 }}>
           <CaptureScreen onPhotoCaptured={handlePhotoCaptured} />
+
+          <TouchableOpacity
+            style={styles.beaconButton}
+            onPress={() => setScreen('beacons')}
+            accessibilityRole="button"
+            accessibilityLabel="Manage beacons"
+          >
+            <Text style={styles.beaconButtonText}>Beacons</Text>
+          </TouchableOpacity>
 
           {last && (
             <View style={styles.statusWrap} pointerEvents="none">
@@ -160,6 +170,23 @@ export default function App() {
           onClose={() => setScreen('camera')}
           onDelete={handleDelete}
         />
+      )}
+
+      {screen === 'beacons' && (
+        <View style={{ flex: 1, backgroundColor: 'white' }}>
+          <View style={styles.beaconHeader}>
+            <TouchableOpacity
+              onPress={() => setScreen('camera')}
+              style={styles.backButton}
+              accessibilityRole="button"
+              accessibilityLabel="Go back to camera"
+            >
+              <Text style={styles.backText}>‹ Back</Text>
+            </TouchableOpacity>
+            <Text style={styles.beaconHeaderTitle}>Manage Beacons</Text>
+          </View>
+          <BeaconRegistrationScreen />
+        </View>
       )}
 
       {screen === 'search' && (
@@ -245,4 +272,27 @@ const styles = StyleSheet.create({
   },
   backText: { color: 'white', fontSize: 20, fontWeight: '600' },
   searchHeaderTitle: { color: 'white', fontSize: 20, fontWeight: '600', marginLeft: 4 },
+
+  // Beacons screen header and camera-screen button (Tommy's branch).
+  beaconHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1F2E4D',
+    paddingTop: (StatusBar.currentHeight ?? 0) + 8,
+    paddingBottom: 8,
+    paddingHorizontal: 8,
+  },
+  beaconHeaderTitle: { color: 'white', fontSize: 20, fontWeight: '600', marginLeft: 4 },
+  beaconButton: {
+    position: 'absolute',
+    top: 16,
+    right: 20,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: 'white',
+  },
+  beaconButtonText: { color: 'white', fontSize: 16, fontWeight: '600' },
 });
