@@ -11,72 +11,98 @@ import {
   StyleSheet,
 } from 'react-native';
 import { colors } from '../theme';
-import {
-  addBeacon,
-  loadBeacons,
-  sameBeacon,
-  type Beacon,
-  type BeaconInput,
-} from '../services/BeaconStore';
-import { scanNearby, type NearbyBeacon } from '../services/BeaconScanner';
+import { loadRegisteredBeacons, registerBeacon } from '../services/BeaconStore';
+import { registerBeaconOnServer } from '../services/BeaconApi';
+import { scanForBeacons } from '../services/BleService';
+import type { BeaconReading } from '../types';
+import type { RegisteredBeacon } from '../types/RegisteredBeacon';
 
-type View_ = 'list' | 'register' | 'nearby';
+// Registered beacons, Register beacon and Nearby beacons pages.
+// Beacons are saved with Tommy's BeaconStore (what the camera checks against)
+// and registered on the server with BeaconApi, the same as his original screen.
+
+type Page = 'list' | 'register' | 'nearby';
 
 type Props = {
   // Called when the user leaves the beacons pages entirely.
   onExit: () => void;
 };
 
-const EMPTY_FORM: BeaconInput = { room: '', uuid: '', major: '', minor: '' };
+type Form = { room: string; uuid: string; major: string; minor: string };
+
+const EMPTY_FORM: Form = { room: '', uuid: '', major: '', minor: '' };
+const UUID_RE = /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/;
 
 function shortUuid(uuid: string): string {
   return `${uuid.slice(0, 8)}…`;
 }
 
+function sameBeacon(
+  a: { uuid: string; major: number; minor: number },
+  b: { uuid: string; major: number; minor: number },
+): boolean {
+  return (
+    a.uuid.toUpperCase() === b.uuid.toUpperCase() &&
+    Number(a.major) === Number(b.major) &&
+    Number(a.minor) === Number(b.minor)
+  );
+}
+
+function parseRange(value: string, label: string): number {
+  const text = value.trim();
+  if (!/^\d+$/.test(text) || Number(text) > 65535) {
+    throw new Error(`${label} must be a whole number from 0 to 65535.`);
+  }
+  return Number(text);
+}
+
 export default function BeaconsScreen({ onExit }: Props) {
-  const [view, setView] = useState<View_>('list');
-  const [beacons, setBeacons] = useState<Beacon[]>([]);
-  const [form, setForm] = useState<BeaconInput>(EMPTY_FORM);
+  const [page, setPage] = useState<Page>('list');
+  const [beacons, setBeacons] = useState<RegisteredBeacon[]>([]);
+  const [form, setForm] = useState<Form>(EMPTY_FORM);
   const [formError, setFormError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   const [scanning, setScanning] = useState(false);
   const [scanDone, setScanDone] = useState(false);
-  const [results, setResults] = useState<NearbyBeacon[]>([]);
-  const [scanError, setScanError] = useState<string | null>(null);
+  const [results, setResults] = useState<BeaconReading[]>([]);
 
-  useEffect(() => {
-    loadBeacons().then(setBeacons);
+  const reload = useCallback(async () => {
+    setBeacons(await loadRegisteredBeacons());
   }, []);
 
+  useEffect(() => {
+    reload();
+  }, [reload]);
+
+  // Uses the same scanner as the camera. It listens for about 10 seconds.
   const runScan = useCallback(async () => {
     if (scanning) {
       return;
     }
     setScanning(true);
     setScanDone(false);
-    setScanError(null);
     try {
-      setResults(await scanNearby(5000));
+      setResults(await scanForBeacons());
       setScanDone(true);
-    } catch (e) {
+    } catch {
       setResults([]);
-      setScanError(e instanceof Error ? e.message : 'Could not scan for beacons.');
+      setScanDone(true);
     } finally {
       setScanning(false);
     }
   }, [scanning]);
 
   const goBack = useCallback(() => {
-    if (view === 'nearby') {
-      setView('register');
-    } else if (view === 'register') {
+    if (page === 'nearby') {
+      setPage('register');
+    } else if (page === 'register') {
       setFormError(null);
-      setView('list');
+      setPage('list');
     } else {
       onExit();
     }
-  }, [view, onExit]);
+  }, [page, onExit]);
 
   // Android back button steps back one page at a time.
   useEffect(() => {
@@ -88,9 +114,9 @@ export default function BeaconsScreen({ onExit }: Props) {
   }, [goBack]);
 
   const registeredName = useCallback(
-    (b: NearbyBeacon): string | null => {
+    (b: BeaconReading): string | null => {
       const match = beacons.find((r) => sameBeacon(r, b));
-      return match ? match.room : null;
+      return match ? match.roomName || 'a room' : null;
     },
     [beacons],
   );
@@ -104,16 +130,16 @@ export default function BeaconsScreen({ onExit }: Props) {
   const openRegister = () => {
     setForm(EMPTY_FORM);
     setFormError(null);
-    setView('register');
+    setPage('register');
     runScan();
   };
 
   const openNearby = () => {
-    setView('nearby');
+    setPage('nearby');
     runScan();
   };
 
-  const chooseBeacon = (b: NearbyBeacon) => {
+  const chooseBeacon = (b: BeaconReading) => {
     setForm((f) => ({
       ...f,
       uuid: b.uuid,
@@ -121,16 +147,45 @@ export default function BeaconsScreen({ onExit }: Props) {
       minor: String(b.minor),
     }));
     setFormError(null);
-    setView('register');
+    setPage('register');
   };
 
   const save = async () => {
     setFormError(null);
     setSaving(true);
     try {
-      setBeacons(await addBeacon(form));
+      const room = form.room.trim();
+      if (room.length === 0) {
+        throw new Error('Enter a room name.');
+      }
+      const uuid = form.uuid.trim().toUpperCase();
+      if (!UUID_RE.test(uuid)) {
+        throw new Error('UUID must look like E2C56DB5-DFFB-48D2-B060-D0F5A71096E0.');
+      }
+      const major = parseRange(form.major, 'Major');
+      const minor = parseRange(form.minor, 'Minor');
+
+      const current = await loadRegisteredBeacons();
+      const dup = current.find((b) => sameBeacon(b, { uuid, major, minor }));
+      if (dup) {
+        throw new Error(`That beacon is already registered as ${dup.roomName || 'a room'}.`);
+      }
+      if (current.some((b) => (b.roomName ?? '').toLowerCase() === room.toLowerCase())) {
+        throw new Error(`A room named ${room} already exists.`);
+      }
+
+      // Server first, like the original screen, so the backend knows the room.
+      try {
+        await registerBeaconOnServer({ uuid, major, minor, room_name: room });
+      } catch (e) {
+        const detail = e instanceof Error ? e.message : String(e);
+        throw new Error(`Could not register with the server: ${detail}`);
+      }
+      await registerBeacon({ uuid, major, minor, roomName: room });
+
+      await reload();
       setForm(EMPTY_FORM);
-      setView('list');
+      setPage('list');
     } catch (e) {
       setFormError(e instanceof Error ? e.message : 'Could not save the beacon.');
     } finally {
@@ -139,7 +194,7 @@ export default function BeaconsScreen({ onExit }: Props) {
   };
 
   // ------------------------------------------------------------------ list
-  if (view === 'list') {
+  if (page === 'list') {
     return (
       <View style={styles.root}>
         <ScrollView contentContainerStyle={styles.content}>
@@ -156,13 +211,13 @@ export default function BeaconsScreen({ onExit }: Props) {
           )}
 
           {beacons.map((b) => (
-            <View key={b.id} style={styles.card}>
+            <View key={`${b.uuid}-${b.major}-${b.minor}`} style={styles.card}>
               <View style={styles.row}>
                 <View style={styles.iconCircle}>
                   <Text style={styles.iconText}>◉</Text>
                 </View>
                 <View style={{ flex: 1, marginLeft: 14 }}>
-                  <Text style={styles.cardTitle}>{b.room}</Text>
+                  <Text style={styles.cardTitle}>{b.roomName || 'Unnamed room'}</Text>
                   <Text style={styles.small}>
                     Major {b.major}, Minor {b.minor}
                   </Text>
@@ -187,7 +242,7 @@ export default function BeaconsScreen({ onExit }: Props) {
   }
 
   // -------------------------------------------------------------- register
-  if (view === 'register') {
+  if (page === 'register') {
     return (
       <View style={styles.root}>
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
@@ -202,17 +257,19 @@ export default function BeaconsScreen({ onExit }: Props) {
           {scanning && !nearest && (
             <View style={[styles.card, styles.row]}>
               <ActivityIndicator color={colors.primary} />
-              <Text style={[styles.small, { marginLeft: 12 }]}>Looking for beacons nearby…</Text>
+              <Text style={[styles.small, { marginLeft: 12, flex: 1 }]}>
+                Looking for beacons nearby. This takes about 10 seconds.
+              </Text>
             </View>
           )}
 
           {nearest && (
             <View style={[styles.card, styles.row]}>
-              <View style={styles.iconCircleBlue}>
-                <Text style={styles.iconTextBlue}>◉</Text>
+              <View style={styles.iconCircle}>
+                <Text style={styles.iconText}>◉</Text>
               </View>
               <View style={{ flex: 1, marginLeft: 12 }}>
-                <Text style={styles.small}>Nearest beacon, signal {nearest.rssi} dBm</Text>
+                <Text style={styles.small}>Nearest beacon, signal {Math.round(nearest.rssi)} dBm</Text>
                 <Text style={styles.mono} numberOfLines={1}>
                   {nearest.uuid}
                 </Text>
@@ -338,10 +395,10 @@ export default function BeaconsScreen({ onExit }: Props) {
             {scanning ? (
               <View style={styles.row}>
                 <ActivityIndicator color={colors.primary} />
-                <Text style={[styles.statusText, { marginLeft: 10 }]}>Searching…</Text>
+                <Text style={[styles.statusText, { marginLeft: 10 }]}>
+                  Searching, about 10 seconds…
+                </Text>
               </View>
-            ) : scanError ? (
-              <Text style={styles.error}>{scanError}</Text>
             ) : scanDone ? (
               <Text style={styles.statusDone}>
                 ✓  Search finished, {results.length}{' '}
@@ -376,7 +433,7 @@ export default function BeaconsScreen({ onExit }: Props) {
                   Major {b.major}, Minor {b.minor}
                 </Text>
                 <Text style={styles.small}>
-                  UUID {shortUuid(b.uuid)} · {b.rssi} dBm
+                  UUID {shortUuid(b.uuid)} · {Math.round(b.rssi)} dBm
                 </Text>
                 {closest && <Text style={styles.closest}>Closest</Text>}
                 {taken && <Text style={styles.small}>Already registered as {taken}</Text>}
@@ -399,8 +456,8 @@ export default function BeaconsScreen({ onExit }: Props) {
 
         {scanDone && results.length === 0 && (
           <Text style={styles.empty}>
-            No beacons found. Move closer to a beacon, make sure it is switched on, and search
-            again.
+            No beacons found. Make sure Bluetooth is on and the beacon is switched on, move
+            closer, and search again.
           </Text>
         )}
 
@@ -469,15 +526,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   iconText: { fontSize: 18, color: colors.primary },
-  iconCircleBlue: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: colors.primarySoft,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  iconTextBlue: { fontSize: 18, color: colors.primary },
 
   label: { fontSize: 14, fontWeight: '600', color: colors.navy, marginBottom: 6, marginTop: 6 },
   input: {
