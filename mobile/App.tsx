@@ -1,6 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
-  SafeAreaView,
   StatusBar,
   View,
   Text,
@@ -12,7 +11,7 @@ import {
 import CaptureScreen from './src/screens/CaptureScreen';
 import SearchScreen from './src/screens/SearchScreen';
 import GalleryScreen from './src/screens/GalleryScreen';
-import BeaconRegistrationScreen from './src/screens/BeaconRegistrationScreen';
+import BeaconsScreen from './src/screens/BeaconsScreen';
 import SignInScreen from './src/screens/SignInScreen';
 import CreateAccountScreen from './src/screens/CreateAccountScreen';
 import AttentionScreen, { attentionKind } from './src/screens/AttentionScreen';
@@ -24,6 +23,16 @@ import { loadPhotos, savePhotos } from './src/services/PhotoStore';
 import { loadSession, signOut, type Session } from './src/services/AuthService';
 import { colors } from './src/theme';
 import type { CapturedPhoto } from './src/types';
+import {
+  SafeAreaProvider,
+  SafeAreaView as InsetView,
+} from 'react-native-safe-area-context';
+
+// Leaves room at the bottom (and sides) for the Android Home/Back/Recents buttons.
+// The top is already handled by StatusBar.currentHeight padding in each screen.
+const SafeAreaView = (props: React.ComponentProps<typeof InsetView>) => (
+  <InsetView edges={['bottom', 'left', 'right']} {...props} />
+);
 
 const RETRY_INTERVAL_MS = 30000;
 
@@ -45,6 +54,14 @@ const STATUS_COLORS: Record<CapturedPhoto['uploadStatus'], string> = {
 };
 
 export default function App() {
+  return (
+    <SafeAreaProvider>
+      <AppContent />
+    </SafeAreaProvider>
+  );
+}
+
+function AppContent() {
   const [photos, setPhotos] = useState<CapturedPhoto[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [now, setNow] = useState(Date.now());
@@ -99,10 +116,6 @@ export default function App() {
   // (The photo viewer handles its own back button.)
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (overlay === 'beacons') {
-        setOverlay('none');
-        return true;
-      }
       if (overlay === 'none' && session && tab !== 'capture') {
         setTab('capture');
         return true;
@@ -193,20 +206,9 @@ export default function App() {
 
   if (overlay === 'beacons') {
     return (
-      <SafeAreaView style={{ flex: 1, backgroundColor: 'white' }}>
-        <StatusBar barStyle="light-content" backgroundColor="#1F2E4D" />
-        <View style={styles.beaconHeader}>
-          <TouchableOpacity
-            onPress={() => setOverlay('none')}
-            style={styles.backButton}
-            accessibilityRole="button"
-            accessibilityLabel="Go back"
-          >
-            <Text style={styles.backText}>‹ Back</Text>
-          </TouchableOpacity>
-          <Text style={styles.beaconHeaderTitle}>Manage Beacons</Text>
-        </View>
-        <BeaconRegistrationScreen />
+      <SafeAreaView style={{ flex: 1, backgroundColor: colors.bg }}>
+        <StatusBar barStyle="dark-content" backgroundColor={colors.bg} />
+        <BeaconsScreen onExit={() => setOverlay('none')} />
       </SafeAreaView>
     );
   }
