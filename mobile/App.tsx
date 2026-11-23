@@ -285,7 +285,7 @@ const styles = StyleSheet.create({
   beaconHeaderTitle: { color: 'white', fontSize: 20, fontWeight: '600', marginLeft: 4 },
   beaconButton: {
     position: 'absolute',
-    top: 16,
+    top: (StatusBar.currentHeight ?? 24) + 16,
     right: 20,
     backgroundColor: 'rgba(0,0,0,0.75)',
     paddingHorizontal: 16,
@@ -293,6 +293,12 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     borderWidth: 1,
     borderColor: 'white',
+    minHeight: 48,
+    minWidth: 90,
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
+    elevation: 10,
   },
   beaconButtonText: { color: 'white', fontSize: 16, fontWeight: '600' },
 });
