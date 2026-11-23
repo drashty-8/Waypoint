@@ -17,15 +17,10 @@ import {
     registerBeacon,
     } from '../services/BeaconStore';
 
-import * as BeaconApi from '../services/BeaconApi';
-
-
 import { registerBeaconOnServer } from '../services/BeaconApi';
 
 import type { BeaconReading } from '../types';
 import type { RegisteredBeacon } from '../types/RegisteredBeacon';
-
-console.log('BEACON API EXPORTS: ', Object.keys(BeaconApi));
 
 const API_BASE = 'https://waypoint-backend.fly.dev'; // Replace with your backend server address
 
@@ -148,9 +143,12 @@ export default function BeaconRegistrationScreen() {
                 `${name} saved successfully.`,
             );
         } catch (error) {
-            console.log(
-                'Registration error:',
-                error instanceof Error ? error.stack : String(error),
+            console.error('Registration error: ', error);
+
+            Alert.alert('Registration Failed',
+                error instanceof Error
+                    ? error.message
+                    : 'Unable to register beacon. Please try again.',
             );
 
         } finally {
@@ -202,7 +200,7 @@ return (
                         </Text>
 
                         <Text style={styles.text}>
-                            Major: {item.major}, Minor: {item.minor}
+                            Major: {item.major}
                         </Text>
 
                         <Text style={styles.text}>

@@ -9,6 +9,7 @@
 import { BleManager, Device } from 'react-native-ble-plx';
 import type { BeaconReading } from '../types';
 import { decode } from 'base-64';
+import { loadRegisteredBeacons } from './BeaconStore';
 
 const bleManager = new BleManager();
 
@@ -238,28 +239,44 @@ try{
 
 export async function scanForNearestBeacon(): Promise<BeaconReading | null> {
 
- /* const beacons = await scanForBeacons();
-
-  return beacons.length > 0 ? beacons[0] : null;
-}*/
 console.log('CAMERA: Starting scan for nearest beacon...');
-  const beacons = await scanForBeacons();
 
-console.log('CAMERA: Scan complete. Found beacons:', beacons);
+//scan for nearby ibeacon
+const detectedBeacons = await scanForBeacons();
 
-const nearestBeacon = beacons.length > 0 ? beacons[0] : null;
+console.log('CAMERA: Detected beacons: ', detectedBeacons);
 
-console.log('CAMERA: Nearest beacon:', nearestBeacon);
-  return nearestBeacon;
+//get beacons registered on phone
+const registeredBeacons = await loadRegisteredBeacons();
+
+console.log('CAMERA: Registered beacons: ', registeredBeacons);
+
+const validBeacons= detectedBeacons.filter(beacon =>
+  registeredBeacons.some(registered =>
+    registered.uuid.toUpperCase() === beacon.uuid.toUpperCase() &&
+    Number(registered.major) === beacon.major &&
+    Number(registered.minor) === beacon.minor
+  )
+);
+
+console.log('CAMERA: Valid registered beacons: ', validBeacons);
+
+const nearestBeacon = validBeacons[0] ?? null;
+
+console.log('CAMERA: Selected beacon: ', nearestBeacon);
+
+return nearestBeacon;
+
 }
+
 let scanInProgress = false;
 
 export function initBle(): void {
   bleManager.onStateChange((state) => {
-    if (state === 'PoweredOn') {
+    if(state === 'PoweredOn') {
       console.log('Bluetooth is powered on');
     } else {
-      console.log('Bluetooth state changed to:', state);
+      console.log('Bluetooth state changed to: ', state);
     }
   }, true);
 }
